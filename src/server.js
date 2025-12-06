@@ -19,9 +19,16 @@ const PORT = process.env.PORT || 5000;
 
 const httpServer = createServer(app);
 
+// ✅ allowed frontend URLs (local + Vercel)
+const allowedOrigins = [
+  "http://localhost:5173",
+  "https://lc-ai-frontend-mu.vercel.app",
+].filter(Boolean);
+
+// Socket.io with proper CORS
 const io = new Server(httpServer, {
   cors: {
-    origin: "http://localhost:5173",
+    origin: allowedOrigins,
     methods: ["GET", "POST"],
     credentials: true,
   },
@@ -32,7 +39,7 @@ const callSessions = new Map();
 
 app.use(
   cors({
-    origin: "http://localhost:5173",
+    origin: allowedOrigins,
     credentials: true,
   })
 );
