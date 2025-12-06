@@ -1,0 +1,22 @@
+# Node dependencies
+node_modules/
+
+# Environment variables
+.env
+
+# Builds / Artifacts
+dist/
+build/
+.next/
+.cache/
+
+# Logs
+npm-debug.log
+yarn-error.log
+
+# Vite
+.vite/
+
+# macOS / Windows junk
+.DS_Store
+Thumbs.db
