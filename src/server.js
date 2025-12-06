@@ -21,25 +21,35 @@ const PORT = process.env.PORT || 5000;
 // --- CORS CONFIG -------------------------------------------------
 
 // allowed frontend URLs (local + Vercel)
+// --- CORS CONFIG -------------------------------------------------
+
 const allowedOrigins = [
   "http://localhost:5173",
-  process.env.FRONTEND_URL, // e.g. https://lc-ai-frontend-mu.vercel.app
+  process.env.FRONTEND_URL, // Your main production URL
 ].filter(Boolean);
 
-console.log("✅ Allowed CORS origins:", allowedOrigins);
+// specific function to check domains
+const validateOrigin = (origin, callback) => {
+  // 1. Allow requests with no origin (like mobile apps, curl, or server-to-server)
+  if (!origin) return callback(null, true);
+
+  // 2. Check if origin is in the explicit allowed list
+  if (allowedOrigins.includes(origin)) {
+    return callback(null, true);
+  }
+
+  // 3. Dynamic Check: Allow Vercel Preview deployments
+  // Checks if it ends with .vercel.app AND contains your project name 'lc-ai-frontend'
+  if (origin.endsWith(".vercel.app") && origin.includes("lc-ai")) {
+    return callback(null, true);
+  }
+
+  console.log("❌ Blocked by CORS:", origin);
+  return callback(new Error("Not allowed by CORS"), false);
+};
 
 const corsOptions = {
-  origin(origin, callback) {
-    // allow server-to-server / curl / Postman (no origin header)
-    if (!origin) return callback(null, true);
-
-    if (allowedOrigins.includes(origin)) {
-      return callback(null, true);
-    }
-
-    console.log("❌ Blocked by CORS:", origin);
-    return callback(new Error("Not allowed by CORS"), false);
-  },
+  origin: validateOrigin,
   methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
   allowedHeaders: ["Content-Type", "Authorization"],
   credentials: true,
@@ -55,7 +65,8 @@ const httpServer = createServer(app);
 
 const io = new Server(httpServer, {
   cors: {
-    origin: allowedOrigins,
+    // IMPORTANT: Pass the function here, not the array!
+    origin: validateOrigin,
     methods: ["GET", "POST"],
     credentials: true,
   },
