@@ -1,0 +1,117 @@
+import express from "express";
+import dotenv from "dotenv";
+
+dotenv.config();
+
+const router = express.Router();
+
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+
+if (!GEMINI_API_KEY) {
+  console.warn("⚠️ GEMINI_API_KEY is not set in .env");
+}
+
+// 👉 Use one of the models your key supports (from /models)
+const MODEL_ID = "gemini-2.5-flash";
+// (we will call: v1/models/gemini-2.5-flash:generateContent)
+
+// Helper: Pick system prompt based on mode
+function getSystemPrompt(mode) {
+  switch (mode) {
+    case "friend":
+      return "You are LC_Ai, a warm, supportive, slightly playful friend. You talk casually, encourage the user, and keep answers clear and short unless they ask for detail.";
+    case "prompt_engineer":
+      return "You are an expert prompt engineer. When the user asks something, you help rewrite or design powerful prompts for other AI models. Give the final prompt clearly, optionally with brief explanation.";
+    case "text_tools":
+      return "You are a text editing assistant. You can rewrite, summarize, correct grammar, and format text. Keep the meaning but improve clarity.";
+    case "room":
+      return "You are an AI participant in a group chat room. Respond as a helpful assistant to all participants. Be neutral, concise, and avoid very long answers unless asked.";
+    default:
+      return "You are a helpful AI assistant.";
+  }
+}
+
+// OPTIONAL: keep this if you still want to inspect available models
+router.get("/models", async (req, res) => {
+  try {
+    const url = `https://generativelanguage.googleapis.com/v1/models?key=${GEMINI_API_KEY}`;
+    const resp = await fetch(url);
+    const data = await resp.json();
+    res.json(data);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/chat
+// body: { mode, messages: [{ role: "user" | "assistant", content: string }] }
+router.post("/", async (req, res) => {
+  try {
+    const { mode = "friend", messages } = req.body;
+
+    if (!Array.isArray(messages) || messages.length === 0) {
+      return res.status(400).json({ error: "messages array is required" });
+    }
+
+    if (!GEMINI_API_KEY) {
+      return res
+        .status(500)
+        .json({ error: "GEMINI_API_KEY is not configured" });
+    }
+
+    const systemPrompt = getSystemPrompt(mode);
+
+    // Build contents for Gemini v1 REST API
+    const contents = [
+      {
+        role: "user",
+        parts: [{ text: systemPrompt }],
+      },
+      ...messages.map((m) => ({
+        role: m.role === "assistant" ? "model" : "user",
+        parts: [{ text: m.content }],
+      })),
+    ];
+
+    const url = `https://generativelanguage.googleapis.com/v1/models/${MODEL_ID}:generateContent?key=${GEMINI_API_KEY}`;
+
+    const resp = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ contents }),
+    });
+
+    const data = await resp.json();
+
+    if (!resp.ok) {
+      console.error("🛑 Gemini error:", data);
+      return res
+        .status(500)
+        .json({ error: data.error?.message || "Gemini request failed" });
+    }
+
+    const parts = data.candidates?.[0]?.content?.parts || [];
+    const text =
+      parts
+        .map((p) => p.text)
+        .filter(Boolean)
+        .join(" ")
+        .trim() || "";
+
+    if (!text) {
+      return res.status(500).json({ error: "No reply from AI" });
+    }
+
+    res.json({
+      reply: { role: "assistant", content: text },
+    });
+  } catch (err) {
+    console.error("🛑 Chat route error:", err);
+    res.status(500).json({
+      error: "AI Request Failed",
+      details: err.message,
+    });
+  }
+});
+
+export default router;
