@@ -19,65 +19,55 @@ function generateInviteLinkId() {
  * - room.members[].id => a stable "user id" for membership
  *      - for logged in users: Mongo _id (user.id)
  *      - for guests: "guest_<something>"
- *
- * Socket side then:
- *   - treats owner by email
- *   - treats membership by members[].id
  */
 
 // POST /api/rooms  (create room)
-router.post(
-  "/",
-  /* requireAuth */ async (req, res) => {
-    try {
-      // When you wire requireAuth, these will come from JWT:
-      const jwtUserId = req.user?.id; // Mongo _id
-      const jwtEmail = req.user?.email; // email
+router.post("/", async (req, res) => {
+  try {
+    const jwtUserId = req.user?.id; // Mongo _id (future)
+    const jwtEmail = req.user?.email; // email (future)
 
-      // For now we also accept fields from body so it works without middleware
-      const bodyOwnerEmail = req.body.ownerEmail || req.body.ownerId; // backward compat
-      const bodyOwnerUserId = req.body.ownerUserId || req.body.ownerDbId;
+    const bodyOwnerEmail = req.body.ownerEmail || req.body.ownerId;
+    const bodyOwnerUserId = req.body.ownerUserId || req.body.ownerDbId;
 
-      // ✅ final identity values
-      const ownerEmail = jwtEmail || bodyOwnerEmail;
-      const ownerUserId = jwtUserId || bodyOwnerUserId || ownerEmail; // fallback
+    const ownerEmail = jwtEmail || bodyOwnerEmail;
+    const ownerUserId = jwtUserId || bodyOwnerUserId || ownerEmail;
 
-      if (!ownerEmail) {
-        return res
-          .status(401)
-          .json({ error: "Owner email required to create room" });
-      }
-
-      const { name, allowAI = true } = req.body;
-      if (!name) {
-        return res.status(400).json({ error: "Room name is required" });
-      }
-
-      const code = generateRoomCode();
-      const inviteLinkId = generateInviteLinkId();
-
-      const room = await Room.create({
-        name,
-        ownerId: ownerEmail, // ✅ ALWAYS EMAIL
-        code,
-        inviteLink: inviteLinkId,
-        allowAI,
-        members: [
-          {
-            id: ownerUserId, // ✅ membership id
-            name: req.body.ownerName || "Owner",
-            role: "owner",
-          },
-        ],
-      });
-
-      res.status(201).json(room);
-    } catch (err) {
-      console.error("Create room error:", err.message);
-      res.status(500).json({ error: "Failed to create room" });
+    if (!ownerEmail) {
+      return res
+        .status(401)
+        .json({ error: "Owner email required to create room" });
     }
+
+    const { name, allowAI = true } = req.body;
+    if (!name) {
+      return res.status(400).json({ error: "Room name is required" });
+    }
+
+    const code = generateRoomCode();
+    const inviteLinkId = generateInviteLinkId();
+
+    const room = await Room.create({
+      name,
+      ownerId: ownerEmail,
+      code,
+      inviteLink: inviteLinkId,
+      allowAI,
+      members: [
+        {
+          id: ownerUserId,
+          name: req.body.ownerName || "Owner",
+          role: "owner",
+        },
+      ],
+    });
+
+    res.status(201).json(room);
+  } catch (err) {
+    console.error("Create room error:", err.message);
+    res.status(500).json({ error: "Failed to create room" });
   }
-);
+});
 
 // POST /api/rooms/join  (join by code – logged in OR guest)
 router.post("/join", async (req, res) => {
@@ -89,9 +79,6 @@ router.post("/join", async (req, res) => {
       return res.status(404).json({ error: "Room not found" });
     }
 
-    // membership id:
-    //  - logged in user: userId (Mongo _id)
-    //  - guest: "guest_<name or random>"
     const identityId =
       userId || `guest_${(guestName || "Guest").replace(/\s+/g, "_")}`;
 

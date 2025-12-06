@@ -31,7 +31,8 @@ function getSystemPrompt(mode) {
   }
 }
 
-// OPTIONAL: keep this if you still want to inspect available models
+// ---------- OPTIONAL: list models ----------
+// GET /api/chat/models
 router.get("/models", async (req, res) => {
   try {
     const url = `https://generativelanguage.googleapis.com/v1/models?key=${GEMINI_API_KEY}`;
@@ -43,11 +44,14 @@ router.get("/models", async (req, res) => {
   }
 });
 
-// POST /api/chat
-// body: { mode, messages: [{ role: "user" | "assistant", content: string }] }
-router.post("/", async (req, res) => {
+// ---------- Shared handler for both "/" and "/:mode" ----------
+async function handleChat(req, res, explicitMode) {
   try {
-    const { mode = "friend", messages } = req.body;
+    const body = req.body || {};
+    const bodyMode = body.mode;
+    const messages = body.messages;
+
+    const mode = explicitMode || bodyMode || "friend";
 
     if (!Array.isArray(messages) || messages.length === 0) {
       return res.status(400).json({ error: "messages array is required" });
@@ -112,6 +116,17 @@ router.post("/", async (req, res) => {
       details: err.message,
     });
   }
+}
+
+// ---------- Routes ----------
+
+// Old style: POST /api/chat  with { mode, messages }
+router.post("/", (req, res) => handleChat(req, res, null));
+
+// New style: POST /api/chat/:mode  (e.g. /friend, /room)
+router.post("/:mode", (req, res) => {
+  const { mode } = req.params;
+  handleChat(req, res, mode);
 });
 
 export default router;
