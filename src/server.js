@@ -22,8 +22,20 @@ const httpServer = createServer(app);
 // ✅ allowed frontend URLs (local + Vercel)
 const allowedOrigins = [
   "http://localhost:5173",
-  process.env.FRONTEND_URL,
+  process.env.FRONTEND_URL, // e.g. https://lc-ai-frontend-mu.vercel.app
 ].filter(Boolean);
+
+const corsOptions = {
+  origin: allowedOrigins,
+  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"],
+  credentials: true,
+};
+
+// Apply CORS globally
+app.use(cors(corsOptions));
+// Explicit preflight handling
+app.options("*", cors(corsOptions));
 
 // Socket.io with proper CORS
 const io = new Server(httpServer, {
@@ -37,12 +49,6 @@ const io = new Server(httpServer, {
 // In-memory call sessions
 const callSessions = new Map();
 
-app.use(
-  cors({
-    origin: allowedOrigins,
-    credentials: true,
-  })
-);
 app.use(express.json());
 
 app.get("/", (req, res) => {
@@ -135,7 +141,6 @@ io.on("connection", (socket) => {
   console.log("🟢 Socket connected:", socket.id);
 
   // 1️⃣ Register which user this socket belongs to
-  //    Call this from frontend right after creating socket
   socket.on("register_user", ({ userId, email }) => {
     socket.data.userId = userId ? String(userId) : null;
     socket.data.userEmail = email || null;
