@@ -216,9 +216,19 @@ io.on("connection", (socket) => {
     try {
       const room = await Room.findById(roomId);
       if (!room) return;
+
       room.allowAI = !room.allowAI;
       await room.save();
-      await broadcastRoomList();
+
+      // 1) Notify everyone in that room that AI has been toggled
+      io.to(roomId).emit("room_ai_toggled", {
+        roomId,
+        allowAI: room.allowAI,
+      });
+
+      // 2) Optionally refresh room list ONLY for the user who changed it
+      //    (owner / logged-in user), not for all sockets
+      await broadcastRoomList(socket);
     } catch (err) {
       console.error("❌ toggle_room_ai error:", err.message);
     }
