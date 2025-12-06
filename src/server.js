@@ -22,7 +22,7 @@ const httpServer = createServer(app);
 // ✅ allowed frontend URLs (local + Vercel)
 const allowedOrigins = [
   "http://localhost:5173",
-  "https://lc-ai-frontend-mu.vercel.app",
+  process.env.FRONTEND_URL,
 ].filter(Boolean);
 
 // Socket.io with proper CORS
