@@ -1,3 +1,4 @@
+// src/routes/chatRoutes.js
 import express from "express";
 import dotenv from "dotenv";
 
@@ -35,11 +36,18 @@ function getSystemPrompt(mode) {
 // GET /api/chat/models
 router.get("/models", async (req, res) => {
   try {
+    if (!GEMINI_API_KEY) {
+      return res
+        .status(500)
+        .json({ error: "GEMINI_API_KEY is not configured" });
+    }
+
     const url = `https://generativelanguage.googleapis.com/v1/models?key=${GEMINI_API_KEY}`;
     const resp = await fetch(url);
     const data = await resp.json();
     res.json(data);
   } catch (err) {
+    console.error("Models fetch error:", err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -89,9 +97,9 @@ async function handleChat(req, res, explicitMode) {
 
     if (!resp.ok) {
       console.error("🛑 Gemini error:", data);
-      return res
-        .status(500)
-        .json({ error: data.error?.message || "Gemini request failed" });
+      const msg =
+        data.error?.message || "Gemini request failed (non-OK response)";
+      return res.status(500).json({ error: msg });
     }
 
     const parts = data.candidates?.[0]?.content?.parts || [];
@@ -124,6 +132,7 @@ async function handleChat(req, res, explicitMode) {
 router.post("/", (req, res) => handleChat(req, res, null));
 
 // New style: POST /api/chat/:mode  (e.g. /friend, /room)
+// Not used by your current frontend, but kept for flexibility.
 router.post("/:mode", (req, res) => {
   const { mode } = req.params;
   handleChat(req, res, mode);

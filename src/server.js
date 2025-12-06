@@ -1,3 +1,4 @@
+// src/server.js
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
@@ -17,33 +18,41 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-const httpServer = createServer(app);
+// --- CORS CONFIG -------------------------------------------------
 
-// ✅ allowed frontend URLs (local + Vercel)
+// allowed frontend URLs (local + Vercel)
 const allowedOrigins = [
   "http://localhost:5173",
   process.env.FRONTEND_URL, // e.g. https://lc-ai-frontend-mu.vercel.app
 ].filter(Boolean);
 
+console.log("✅ Allowed CORS origins:", allowedOrigins);
+
 const corsOptions = {
-  origin: allowedOrigins,
+  origin(origin, callback) {
+    // allow server-to-server / curl / Postman (no origin header)
+    if (!origin) return callback(null, true);
+
+    if (allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+
+    console.log("❌ Blocked by CORS:", origin);
+    return callback(new Error("Not allowed by CORS"), false);
+  },
   methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
   allowedHeaders: ["Content-Type", "Authorization"],
   credentials: true,
 };
 
-// ✅ Apply CORS globally
+// Apply CORS + JSON body parsing
 app.use(cors(corsOptions));
-// ❌ REMOVE the old `app.options("*", ...)` – Express 5 hates bare "*"
-// If you really want explicit preflight handling, you can do:
-//
-// app.options("/*", cors(corsOptions));
-//
-// but it's not required, `app.use(cors())` already handles OPTIONS.
-
 app.use(express.json());
 
-// Socket.io with proper CORS
+// --- HTTP SERVER + SOCKET.IO -------------------------------------
+
+const httpServer = createServer(app);
+
 const io = new Server(httpServer, {
   cors: {
     origin: allowedOrigins,
@@ -55,10 +64,13 @@ const io = new Server(httpServer, {
 // In-memory call sessions
 const callSessions = new Map();
 
+// --- BASIC ROUTE -------------------------------------------------
+
 app.get("/", (req, res) => {
   res.json({ message: "LC_Ai backend running ✅" });
 });
 
+// API routes
 app.use("/api/auth", authRoutes);
 app.use("/api/rooms", roomRoutes);
 app.use("/api/chat", chatRoutes);
@@ -168,7 +180,7 @@ io.on("connection", (socket) => {
         inviteLink: roomData.inviteLink || null,
         members: roomData.members || [],
       });
-      await broadcastRoomList(); // personalised to each socket
+      await broadcastRoomList();
     } catch (err) {
       console.error("❌ ROOM SAVE FAILED:", err.message);
     }
@@ -205,7 +217,7 @@ io.on("connection", (socket) => {
     }
   });
 
-  // 🔹 ROOM THEME CHANGE (broadcast to everyone in that room)
+  // 🔹 ROOM THEME CHANGE
   socket.on("change_room_theme", ({ roomId, theme }) => {
     if (!roomId || !theme) return;
     io.to(roomId).emit("room_theme_changed", { roomId, theme });
@@ -250,7 +262,6 @@ io.on("connection", (socket) => {
 
       socket.join(roomId);
 
-      // register this guest to see that room in their list
       socket.data.userId = guestId;
       socket.data.userEmail = null;
 
@@ -260,7 +271,7 @@ io.on("connection", (socket) => {
         displayName: name,
       });
 
-      await broadcastRoomList(socket); // only update this guest's list
+      await broadcastRoomList(socket);
     } catch (err) {
       console.error("join_room_guest error:", err.message);
       socket.emit("guest_join_failed", { reason: "SERVER_ERROR" });
@@ -282,7 +293,6 @@ io.on("connection", (socket) => {
       });
     }
 
-    // if call already active, notify this user
     const session = callSessions.get(roomId);
     if (session) {
       socket.emit("call_started", {
@@ -456,7 +466,7 @@ async function start() {
     await mongoose.connect(process.env.MONGO_URI, { dbName: "lc_ai" });
     console.log("✅ MongoDB connected");
     httpServer.listen(PORT, () => {
-      console.log(`🚀 Server running on http://localhost:${PORT}`);
+      console.log(`🚀 Server running on port ${PORT}`);
     });
   } catch (err) {
     console.error("❌ Error starting server:", err.message);
