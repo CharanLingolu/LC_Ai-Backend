@@ -32,10 +32,16 @@ const corsOptions = {
   credentials: true,
 };
 
-// Apply CORS globally
+// ✅ Apply CORS globally
 app.use(cors(corsOptions));
-// Explicit preflight handling
-app.options("*", cors(corsOptions));
+// ❌ REMOVE the old `app.options("*", ...)` – Express 5 hates bare "*"
+// If you really want explicit preflight handling, you can do:
+//
+// app.options("/*", cors(corsOptions));
+//
+// but it's not required, `app.use(cors())` already handles OPTIONS.
+
+app.use(express.json());
 
 // Socket.io with proper CORS
 const io = new Server(httpServer, {
@@ -48,8 +54,6 @@ const io = new Server(httpServer, {
 
 // In-memory call sessions
 const callSessions = new Map();
-
-app.use(express.json());
 
 app.get("/", (req, res) => {
   res.json({ message: "LC_Ai backend running ✅" });
