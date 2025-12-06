@@ -20,9 +20,6 @@ const PORT = process.env.PORT || 5000;
 
 // --- CORS CONFIG -------------------------------------------------
 
-// allowed frontend URLs (local + Vercel)
-// --- CORS CONFIG -------------------------------------------------
-
 const allowedOrigins = [
   "http://localhost:5173",
   process.env.FRONTEND_URL, // Your main production URL
@@ -39,7 +36,7 @@ const validateOrigin = (origin, callback) => {
   }
 
   // 3. Dynamic Check: Allow Vercel Preview deployments
-  // Checks if it ends with .vercel.app AND contains your project name 'lc-ai-frontend'
+  // Checks if it ends with .vercel.app AND contains your project name 'lc-ai'
   if (origin.endsWith(".vercel.app") && origin.includes("lc-ai")) {
     return callback(null, true);
   }
@@ -65,7 +62,6 @@ const httpServer = createServer(app);
 
 const io = new Server(httpServer, {
   cors: {
-    // IMPORTANT: Pass the function here, not the array!
     origin: validateOrigin,
     methods: ["GET", "POST"],
     credentials: true,
@@ -228,10 +224,18 @@ io.on("connection", (socket) => {
     }
   });
 
-  // 🔹 ROOM THEME CHANGE
-  socket.on("change_room_theme", ({ roomId, theme }) => {
+  // 🔹 ROOM THEME CHANGE (UPDATED)
+  socket.on("change_room_theme", ({ roomId, theme, changedBy }) => {
     if (!roomId || !theme) return;
-    io.to(roomId).emit("room_theme_changed", { roomId, theme });
+
+    // Notify all clients to update the theme
+    io.to(roomId).emit("room_theme_changed", { roomId, theme, changedBy });
+
+    // Also send a system message into the chat
+    io.to(roomId).emit("system_message", {
+      content: `${changedBy || "Someone"} changed the room theme to "${theme}"`,
+      timestamp: Date.now(),
+    });
   });
 
   socket.on("verify_room_code", async (code, callback) => {
