@@ -12,39 +12,8 @@ import chatRoutes from "./routes/chatRoutes.js";
 
 import Room from "./models/Room.js";
 import Message from "./models/Message.js";
-import { GoogleGenerativeAI } from "@google/generative-ai";
 
 dotenv.config();
-// --- GEMINI CONFIG (ADD THIS) ---
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
-
-// Helper: Retry Logic tuned for Free Tier (Wait up to 30s)
-async function generateAIWithRetry(prompt, retries = 3, delay = 10000) {
-  try {
-    const result = await model.generateContent(prompt);
-    return result.response.text();
-  } catch (error) {
-    // Check if error is 429 (Too Many Requests) or Quota related
-    if (
-      retries > 0 &&
-      (error.status === 429 ||
-        error.message.includes("quota") ||
-        error.message.includes("429"))
-    ) {
-      console.log(`⚠️ Quota hit. AI is "cooling down" for ${delay / 1000}s...`);
-
-      // Wait for the specified delay
-      await new Promise((res) => setTimeout(res, delay));
-
-      // Retry with a slightly longer delay (e.g., 10s -> 15s -> 22s)
-      return generateAIWithRetry(prompt, retries - 1, Math.floor(delay * 1.5));
-    }
-
-    // If we run out of retries or it's a different error, throw it
-    throw error;
-  }
-}
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -417,11 +386,8 @@ io.on("connection", (socket) => {
 
   // ------- SEND MESSAGE + REACTIONS -------
 
-  // ------- SEND MESSAGE + REACTIONS + AI -------
-
   socket.on("send_message", async (data) => {
     try {
-      // 1. Save User Message
       const saved = await Message.create({
         room: data.roomId,
         senderUser: data.senderUserId || null,
@@ -442,51 +408,15 @@ io.on("connection", (socket) => {
       };
 
       io.to(data.roomId).emit("receive_message", payload);
-
-      // --- AI LOGIC STARTS HERE ---
-
-      // 2. Check if Room has AI enabled
-      const room = await Room.findById(data.roomId);
-
-      // Only reply if AI is allowed AND the last message wasn't from the AI (to prevent loops)
-      if (room && room.allowAI && data.role !== "ai") {
-        // Optional: Send "AI is typing..." indicator
-        io.to(data.roomId).emit("typing", {
-          roomId: data.roomId,
-          displayName: "AI Assistant",
-        });
-
-        try {
-          // 3. Generate Response with Retry Logic
-          const aiResponseText = await generateAIWithRetry(data.text);
-
-          // 4. Save AI Message to DB
-          const savedAI = await Message.create({
-            room: data.roomId,
-            role: "ai",
-            content: aiResponseText,
-            senderGuestName: "AI Assistant",
-          });
-
-          // 5. Emit AI Message to Chat
-          io.to(data.roomId).emit("receive_message", {
-            _id: savedAI._id.toString(),
-            roomId: savedAI.room.toString(),
-            text: savedAI.content,
-            role: "ai",
-            senderGuestName: "AI Assistant",
-            createdAt: savedAI.createdAt,
-            reactions: [],
-          });
-        } catch (aiError) {
-          console.error("❌ AI Generation Failed:", aiError.message);
-          // Optional: Emit error message to chat or just fail silently
-        }
-      }
-      // --- AI LOGIC ENDS HERE ---
     } catch (e) {
       console.warn("Message save error (non-fatal):", e.message);
-      // ... existing error handling ...
+
+      io.to(data.roomId).emit("receive_message", {
+        ...data,
+        _id: `temp-${Date.now()}`,
+        createdAt: new Date().toISOString(),
+        reactions: [],
+      });
     }
   });
 

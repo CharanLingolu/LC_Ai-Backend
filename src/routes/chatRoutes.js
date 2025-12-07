@@ -13,9 +13,8 @@ if (!GEMINI_API_KEY) {
 }
 
 // 👉 Use one of the models your key supports (from /models)
-// NOTE: "gemini-2.5-flash" might not be valid yet, switched to standard "gemini-1.5-flash"
-// If you are sure 2.5 exists for your account, you can change it back.
-const MODEL_ID = "gemini-1.5-flash";
+const MODEL_ID = "gemini-2.5-flash";
+// (we will call: v1/models/gemini-2.5-flash:generateContent)
 
 // Helper: Pick system prompt based on mode
 function getSystemPrompt(mode) {
@@ -88,44 +87,20 @@ async function handleChat(req, res, explicitMode) {
 
     const url = `https://generativelanguage.googleapis.com/v1/models/${MODEL_ID}:generateContent?key=${GEMINI_API_KEY}`;
 
-    // --- RETRY LOGIC WRAPPER START ---
-    async function fetchWithRetry(retries = 3, delay = 10000) {
-      const resp = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ contents }),
-      });
+    const resp = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ contents }),
+    });
 
-      const data = await resp.json();
+    const data = await resp.json();
 
-      // If we hit a Quota Error (429 or specific error message)
-      if (!resp.ok) {
-        if (
-          retries > 0 &&
-          (resp.status === 429 || JSON.stringify(data).includes("quota"))
-        ) {
-          console.warn(`⚠️ Quota hit. Retrying in ${delay / 1000}s...`);
-
-          // Wait for the delay
-          await new Promise((resolve) => setTimeout(resolve, delay));
-
-          // Retry with doubled delay (Exponential Backoff)
-          // 10s -> 20s -> 40s
-          return fetchWithRetry(retries - 1, delay * 2);
-        }
-
-        // If it's a real error (not quota), throw it immediately
-        const msg =
-          data.error?.message || "Gemini request failed (non-OK response)";
-        throw new Error(msg);
-      }
-
-      return data;
+    if (!resp.ok) {
+      console.error("🛑 Gemini error:", data);
+      const msg =
+        data.error?.message || "Gemini request failed (non-OK response)";
+      return res.status(500).json({ error: msg });
     }
-    // --- RETRY LOGIC WRAPPER END ---
-
-    // Execute the call with retry logic
-    const data = await fetchWithRetry();
 
     const parts = data.candidates?.[0]?.content?.parts || [];
     const text =
@@ -143,16 +118,7 @@ async function handleChat(req, res, explicitMode) {
       reply: { role: "assistant", content: text },
     });
   } catch (err) {
-    console.error("🛑 Chat route error:", err.message);
-
-    // If it STILL fails after retries, send a clean message
-    if (err.message.toLowerCase().includes("quota")) {
-      return res.status(503).json({
-        error:
-          "Server is busy (Quota Limit). Please wait 30 seconds and try again.",
-      });
-    }
-
+    console.error("🛑 Chat route error:", err);
     res.status(500).json({
       error: "AI Request Failed",
       details: err.message,
