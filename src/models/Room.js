@@ -12,13 +12,27 @@ const memberSchema = new mongoose.Schema(
 const roomSchema = new mongoose.Schema(
   {
     name: { type: String, required: true },
+
+    // ALWAYS the owner's email (we use this on server for limits / visibility)
     ownerId: { type: String, required: true },
+
+    // 6-digit room code, must be unique
     code: { type: String, required: true, unique: true },
 
-    // Match what frontend sends
+    // 🔹 This field already has a unique index in Mongo: inviteLinkId_1
+    // so it MUST exist and be non-null when creating a room.
+    inviteLinkId: {
+      type: String,
+      required: true,
+      unique: true,
+      index: true,
+    },
+
+    // Optional pretty link / token you share (can equal inviteLinkId)
     inviteLink: { type: String, required: false },
 
     allowAI: { type: Boolean, default: true },
+
     members: [memberSchema],
 
     // 🎨 chat theme for this room ("default", "love", "midnight", etc.)

@@ -51,6 +51,7 @@ router.post("/", async (req, res) => {
       name,
       ownerId: ownerEmail,
       code,
+      inviteLinkId, // 👈 NEW
       inviteLink: inviteLinkId,
       allowAI,
       members: [

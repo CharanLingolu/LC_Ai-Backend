@@ -158,6 +158,11 @@ async function broadcastRoomList(targetSocket = null) {
   }
 }
 
+// 🔹 helper for unique inviteLinkId (used by sockets route)
+function generateInviteLinkId() {
+  return Math.random().toString(36).substring(2, 10);
+}
+
 // ---------- SOCKET.IO ----------
 
 io.on("connection", (socket) => {
@@ -179,17 +184,52 @@ io.on("connection", (socket) => {
 
   socket.on("create_room", async (roomData) => {
     try {
+      const ownerEmail = roomData.ownerId; // you send user.email from frontend
+
+      if (!ownerEmail) {
+        console.warn("create_room called without ownerId/email");
+        socket.emit("room_create_failed", {
+          reason: "MISSING_OWNER",
+          message: "Owner email is required to create a room.",
+        });
+        return;
+      }
+
+      // 🔹 1) Enforce max 5 rooms per owner
+      const existingCount = await Room.countDocuments({ ownerId: ownerEmail });
+      if (existingCount >= 5) {
+        socket.emit("room_create_failed", {
+          reason: "LIMIT_REACHED",
+          message: "You can only create up to 5 rooms.",
+        });
+        return;
+      }
+
+      // 🔹 2) Generate a unique inviteLinkId (this is what Mongo's index is on)
+      const inviteLinkId =
+        roomData.inviteLinkId || Math.random().toString(36).substring(2, 10);
+
+      console.log("Creating room with inviteLinkId =", inviteLinkId);
+
+      // 🔹 3) Actually create the room
       await Room.create({
         name: roomData.name,
         code: roomData.code,
-        ownerId: roomData.ownerId, // usually user.email
+        ownerId: ownerEmail, // usually user.email
         allowAI: roomData.allowAI,
-        inviteLink: roomData.inviteLink || null,
+        inviteLinkId, // 👈 critical: NOT null
+        inviteLink: roomData.inviteLink || inviteLinkId,
         members: roomData.members || [],
       });
-      await broadcastRoomList();
+
+      // 🔹 4) Update room list, but only for the creator socket
+      await broadcastRoomList(socket);
     } catch (err) {
       console.error("❌ ROOM SAVE FAILED:", err.message);
+      socket.emit("room_create_failed", {
+        reason: "SERVER_ERROR",
+        message: "Failed to create room. Try again later.",
+      });
     }
   });
 
@@ -226,8 +266,7 @@ io.on("connection", (socket) => {
         allowAI: room.allowAI,
       });
 
-      // 2) Optionally refresh room list ONLY for the user who changed it
-      //    (owner / logged-in user), not for all sockets
+      // 2) Refresh room list only for this socket
       await broadcastRoomList(socket);
     } catch (err) {
       console.error("❌ toggle_room_ai error:", err.message);
@@ -260,7 +299,9 @@ io.on("connection", (socket) => {
 
   // ------- GUEST JOIN (by secret code) -------
 
-  socket.on("join_room_guest", async ({ code, name }) => {
+  // ------- GUEST JOIN (by secret code) -------
+
+  socket.on("join_room_guest", async ({ code, name, guestId }) => {
     try {
       if (!code || !name) {
         socket.emit("guest_join_failed", { reason: "MISSING_DATA" });
@@ -274,25 +315,39 @@ io.on("connection", (socket) => {
       }
 
       const roomId = room._id.toString();
-      const guestId = `guest_${socket.id}`;
 
-      if (!room.members.some((m) => m.id === guestId)) {
+      // 👇 stable guest id (from frontend), fallback if missing
+      const stableGuestId =
+        guestId || `guest_${Math.random().toString(36).substring(2, 10)}`;
+
+      // 🔹 BACKWARD-COMPAT: older rooms might not have inviteLinkId yet
+      if (!room.inviteLinkId) {
+        const newId = Math.random().toString(36).substring(2, 10);
+        room.inviteLinkId = newId;
+        if (!room.inviteLink) {
+          room.inviteLink = newId;
+        }
+      }
+
+      // add guest to members if not already there
+      if (!room.members.some((m) => String(m.id) === String(stableGuestId))) {
         room.members.push({
-          id: guestId,
+          id: stableGuestId,
           name,
           role: "guest",
         });
-        await room.save();
       }
+
+      await room.save();
 
       socket.join(roomId);
 
-      socket.data.userId = guestId;
+      socket.data.userId = stableGuestId;
       socket.data.userEmail = null;
 
       socket.emit("guest_joined_success", {
         room: room.toObject(),
-        userId: guestId,
+        userId: stableGuestId,
         displayName: name,
       });
 
