@@ -22,21 +22,16 @@ const PORT = process.env.PORT || 5000;
 
 const allowedOrigins = [
   "http://localhost:5173",
-  process.env.FRONTEND_URL, // Your main production URL (e.g. https://lc-ai-frontend-mu.vercel.app)
+  process.env.FRONTEND_URL,
 ].filter(Boolean);
 
-// specific function to check domains
 const validateOrigin = (origin, callback) => {
-  // 1. Allow requests with no origin (like mobile apps, curl, or server-to-server)
   if (!origin) return callback(null, true);
 
-  // 2. Check if origin is in the explicit allowed list
   if (allowedOrigins.includes(origin)) {
     return callback(null, true);
   }
 
-  // 3. Dynamic Check: Allow Vercel Preview deployments
-  // Checks if it ends with .vercel.app AND contains your project name 'lc-ai'
   if (origin.endsWith(".vercel.app") && origin.includes("lc-ai")) {
     return callback(null, true);
   }
@@ -52,7 +47,6 @@ const corsOptions = {
   credentials: true,
 };
 
-// Apply CORS + JSON body parsing
 app.use(cors(corsOptions));
 app.use(express.json());
 
@@ -119,7 +113,6 @@ function filterRoomsForSocket(allRooms, socket) {
   const userId = socket.data?.userId || null;
 
   if (!userEmail && !userId) {
-    // not identified => no private rooms shown
     return [];
   }
 
@@ -128,25 +121,18 @@ function filterRoomsForSocket(allRooms, socket) {
     const members = Array.isArray(room.members) ? room.members : [];
     const memberIds = members.map((m) => String(m.id));
 
-    // Owner checks (support both email or id stored as ownerId)
     const isOwnerByEmail = userEmail && ownerId === userEmail;
     const isOwnerById = userId && ownerId === String(userId);
 
-    // Member checks (support both id and email stored in members[].id)
     const isMemberByUserId = userId && memberIds.includes(String(userId));
     const isMemberByEmail = userEmail && memberIds.includes(userEmail);
 
-    const visible =
-      isOwnerByEmail || isOwnerById || isMemberByUserId || isMemberByEmail;
-
-    return visible;
+    return isOwnerByEmail || isOwnerById || isMemberByUserId || isMemberByEmail;
   });
 }
 
 /**
  * Broadcast updated room list
- * - if targetSocket given -> only to that socket
- * - otherwise -> recompute for each connected socket individually
  */
 async function broadcastRoomList(targetSocket = null) {
   try {
@@ -158,7 +144,6 @@ async function broadcastRoomList(targetSocket = null) {
       return;
     }
 
-    // send personalised list to every connected socket
     for (const [, s] of io.sockets.sockets) {
       const visible = filterRoomsForSocket(rooms, s);
       s.emit("room_list_update", visible);
@@ -166,6 +151,18 @@ async function broadcastRoomList(targetSocket = null) {
   } catch (err) {
     console.error("Error fetching rooms for broadcast:", err);
   }
+}
+
+/**
+ * Emit current online count for a room using Socket.IO adapter
+ */
+function emitActiveUsersCount(roomKey) {
+  const room = io.sockets.adapter.rooms.get(String(roomKey));
+  const count = room ? room.size : 0;
+  io.to(String(roomKey)).emit("active_users_update", {
+    roomId: String(roomKey),
+    count,
+  });
 }
 
 // ---------- SOCKET.IO ----------
@@ -179,18 +176,16 @@ io.on("connection", (socket) => {
     socket.data.userEmail = email || null;
     console.log("🔐 register_user:", socket.data);
 
-    // send initial room list for this user only
     broadcastRoomList(socket);
   });
 
-  // Manual refresh from client (after login change etc.)
   socket.on("request_room_list", () => broadcastRoomList(socket));
 
   // ------- ROOMS CRUD -------
 
   socket.on("create_room", async (roomData) => {
     try {
-      const ownerEmail = roomData.ownerId; // you send user.email from frontend
+      const ownerEmail = roomData.ownerId;
 
       if (!ownerEmail) {
         console.warn("create_room called without ownerId/email");
@@ -201,7 +196,6 @@ io.on("connection", (socket) => {
         return;
       }
 
-      // 1) Enforce max 5 rooms per owner
       const existingCount = await Room.countDocuments({ ownerId: ownerEmail });
       if (existingCount >= 5) {
         socket.emit("room_create_failed", {
@@ -211,24 +205,21 @@ io.on("connection", (socket) => {
         return;
       }
 
-      // 2) Generate a unique inviteLinkId (this is what Mongo's index is on)
       const inviteLinkId =
         roomData.inviteLinkId || Math.random().toString(36).substring(2, 10);
 
       console.log("Creating room with inviteLinkId =", inviteLinkId);
 
-      // 3) Actually create the room
       await Room.create({
         name: roomData.name,
         code: roomData.code,
-        ownerId: ownerEmail, // usually user.email
+        ownerId: ownerEmail,
         allowAI: roomData.allowAI,
-        inviteLinkId, // NOT null
+        inviteLinkId,
         inviteLink: roomData.inviteLink || inviteLinkId,
         members: roomData.members || [],
       });
 
-      // 4) Update room list, but only for the creator socket
       await broadcastRoomList(socket);
     } catch (err) {
       console.error("❌ ROOM SAVE FAILED:", err.message);
@@ -266,13 +257,11 @@ io.on("connection", (socket) => {
       room.allowAI = !room.allowAI;
       await room.save();
 
-      // 1) Notify everyone in that room that AI has been toggled
       io.to(roomId).emit("room_ai_toggled", {
         roomId,
         allowAI: room.allowAI,
       });
 
-      // 2) Refresh room list only for this socket
       await broadcastRoomList(socket);
     } catch (err) {
       console.error("❌ toggle_room_ai error:", err.message);
@@ -318,18 +307,15 @@ io.on("connection", (socket) => {
 
       const roomId = room._id.toString();
 
-      // stable guest id (from frontend), fallback if missing
       const stableGuestId =
         guestId || `guest_${Math.random().toString(36).substring(2, 10)}`;
 
-      // BACKWARD-COMPAT: older rooms might not have inviteLinkId yet
       if (!room.inviteLinkId) {
         const newId = Math.random().toString(36).substring(2, 10);
         room.inviteLinkId = newId;
         if (!room.inviteLink) room.inviteLink = newId;
       }
 
-      // add guest to members if not already there
       if (!room.members.some((m) => String(m.id) === String(stableGuestId))) {
         room.members.push({
           id: stableGuestId,
@@ -357,6 +343,7 @@ io.on("connection", (socket) => {
       });
 
       await broadcastRoomList(socket);
+      emitActiveUsersCount(roomId);
     } catch (err) {
       console.error("join_room_guest error:", err.message);
       socket.emit("guest_join_failed", { reason: "SERVER_ERROR" });
@@ -386,11 +373,15 @@ io.on("connection", (socket) => {
         startedBy: session.startedBy || "Someone",
       });
     }
+
+    // ⭐ ONLINE COUNT: adapter-based
+    emitActiveUsersCount(roomKey);
   });
 
   socket.on("leave_room", ({ roomId }) => {
     const roomKey = String(roomId);
     socket.leave(roomKey);
+    emitActiveUsersCount(roomKey);
   });
 
   // ------- SEND MESSAGE + REACTIONS -------
@@ -542,6 +533,16 @@ io.on("connection", (socket) => {
 
   socket.on("disconnect", () => {
     console.log("🔴 Socket disconnected:", socket.id);
+
+    // For each room the socket was in (except its own room),
+    // send updated online count
+    const joinedRooms = [...socket.rooms].filter(
+      (roomKey) => roomKey !== socket.id
+    );
+    joinedRooms.forEach((roomKey) => {
+      emitActiveUsersCount(roomKey);
+    });
+
     for (const [roomId] of callSessions.entries()) {
       handleLeaveCall(io, roomId, socket);
     }
