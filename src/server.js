@@ -19,20 +19,29 @@ dotenv.config();
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
 
-// Helper: Retry Logic for 429 Errors
-async function generateAIWithRetry(prompt, retries = 3, delay = 2000) {
+// Helper: Retry Logic tuned for Free Tier (Wait up to 30s)
+async function generateAIWithRetry(prompt, retries = 3, delay = 10000) {
   try {
     const result = await model.generateContent(prompt);
     return result.response.text();
   } catch (error) {
+    // Check if error is 429 (Too Many Requests) or Quota related
     if (
       retries > 0 &&
-      (error.status === 429 || error.message.includes("quota"))
+      (error.status === 429 ||
+        error.message.includes("quota") ||
+        error.message.includes("429"))
     ) {
-      console.log(`⚠️ Quota hit. Retrying in ${delay}ms...`);
+      console.log(`⚠️ Quota hit. AI is "cooling down" for ${delay / 1000}s...`);
+
+      // Wait for the specified delay
       await new Promise((res) => setTimeout(res, delay));
-      return generateAIWithRetry(prompt, retries - 1, delay * 2);
+
+      // Retry with a slightly longer delay (e.g., 10s -> 15s -> 22s)
+      return generateAIWithRetry(prompt, retries - 1, Math.floor(delay * 1.5));
     }
+
+    // If we run out of retries or it's a different error, throw it
     throw error;
   }
 }
