@@ -69,6 +69,7 @@ const io = new Server(httpServer, {
 });
 
 // In-memory call sessions
+// Map<roomKey (string), { startedBy, startedAt, maxParticipants, participants: Map<socketId, name> }>
 const callSessions = new Map();
 
 // --- BASIC ROUTE -------------------------------------------------
@@ -84,8 +85,9 @@ app.use("/api/chat", chatRoutes);
 
 // ---------- Helpers ----------
 
-function handleLeaveCall(io, roomId, socket) {
-  const session = callSessions.get(roomId);
+function handleLeaveCall(io, rawRoomId, socket) {
+  const roomKey = String(rawRoomId);
+  const session = callSessions.get(roomKey);
   if (!session) return;
 
   if (session.participants.has(socket.id)) {
@@ -94,15 +96,15 @@ function handleLeaveCall(io, roomId, socket) {
 
     const participantCount = session.participants.size;
 
-    socket.to(roomId).emit("user_left_call", {
+    socket.to(roomKey).emit("user_left_call", {
       peerId: socket.id,
       name,
       participantCount,
     });
 
     if (participantCount === 0) {
-      callSessions.delete(roomId);
-      io.to(roomId).emit("call_ended", { roomId });
+      callSessions.delete(roomKey);
+      io.to(roomKey).emit("call_ended", { roomId: roomKey });
     }
   }
 }
@@ -158,11 +160,6 @@ async function broadcastRoomList(targetSocket = null) {
   }
 }
 
-// 🔹 helper for unique inviteLinkId (used by sockets route)
-function generateInviteLinkId() {
-  return Math.random().toString(36).substring(2, 10);
-}
-
 // ---------- SOCKET.IO ----------
 
 io.on("connection", (socket) => {
@@ -183,7 +180,7 @@ io.on("connection", (socket) => {
   // ------- ROOMS CRUD -------
 
   socket.on("create_room", async (roomData) => {
-    try {
+    try:
       const ownerEmail = roomData.ownerId; // you send user.email from frontend
 
       if (!ownerEmail) {
@@ -299,8 +296,6 @@ io.on("connection", (socket) => {
 
   // ------- GUEST JOIN (by secret code) -------
 
-  // ------- GUEST JOIN (by secret code) -------
-
   socket.on("join_room_guest", async ({ code, name, guestId }) => {
     try {
       if (!code || !name) {
@@ -316,17 +311,15 @@ io.on("connection", (socket) => {
 
       const roomId = room._id.toString();
 
-      // 👇 stable guest id (from frontend), fallback if missing
+      // stable guest id (from frontend), fallback if missing
       const stableGuestId =
         guestId || `guest_${Math.random().toString(36).substring(2, 10)}`;
 
-      // 🔹 BACKWARD-COMPAT: older rooms might not have inviteLinkId yet
+      // BACKWARD-COMPAT: older rooms might not have inviteLinkId yet
       if (!room.inviteLinkId) {
         const newId = Math.random().toString(36).substring(2, 10);
         room.inviteLinkId = newId;
-        if (!room.inviteLink) {
-          room.inviteLink = newId;
-        }
+        if (!room.inviteLink) room.inviteLink = newId;
       }
 
       // add guest to members if not already there
@@ -351,6 +344,12 @@ io.on("connection", (socket) => {
         displayName: name,
       });
 
+      // 🔁 system message so everyone (including guest) sees "<name> joined"
+      io.to(roomId).emit("system_message", {
+        content: `${name} joined`,
+        timestamp: Date.now(),
+      });
+
       await broadcastRoomList(socket);
     } catch (err) {
       console.error("join_room_guest error:", err.message);
@@ -363,27 +362,30 @@ io.on("connection", (socket) => {
   socket.on("join_room", ({ roomId, displayName }) => {
     if (!roomId) return;
 
-    const alreadyInRoom = socket.rooms.has(roomId);
-    socket.join(roomId);
+    const roomKey = String(roomId);
+    const alreadyInRoom = socket.rooms.has(roomKey);
+    socket.join(roomKey);
 
     if (!alreadyInRoom) {
-      socket.to(roomId).emit("system_message", {
+      // system message to EVERYONE in that room (including the joining user)
+      io.to(roomKey).emit("system_message", {
         content: `${displayName || "Someone"} joined`,
         timestamp: Date.now(),
       });
     }
 
-    const session = callSessions.get(roomId);
+    const session = callSessions.get(roomKey);
     if (session) {
       socket.emit("call_started", {
-        roomId,
+        roomId: roomKey,
         startedBy: session.startedBy || "Someone",
       });
     }
   });
 
   socket.on("leave_room", ({ roomId }) => {
-    socket.leave(roomId);
+    const roomKey = String(roomId);
+    socket.leave(roomKey);
   });
 
   // ------- SEND MESSAGE + REACTIONS -------
@@ -469,9 +471,11 @@ io.on("connection", (socket) => {
   // ------- VOICE / VIDEO CALL -------
 
   socket.on("join_call", ({ roomId, isOwner, displayName }) => {
+    if (!roomId) return;
+    const roomKey = String(roomId);
     const name = displayName || "User";
 
-    let session = callSessions.get(roomId);
+    let session = callSessions.get(roomKey);
 
     if (!session) {
       session = {
@@ -480,15 +484,15 @@ io.on("connection", (socket) => {
         maxParticipants: 0,
         participants: new Map(),
       };
-      callSessions.set(roomId, session);
+      callSessions.set(roomKey, session);
 
-      socket.to(roomId).emit("call_started", {
-        roomId,
+      socket.to(roomKey).emit("call_started", {
+        roomId: roomKey,
         startedBy: name,
       });
     }
 
-    socket.join(roomId);
+    socket.join(roomKey);
 
     session.participants.set(socket.id, name);
     session.maxParticipants = Math.max(
@@ -503,12 +507,12 @@ io.on("connection", (socket) => {
     const participantCount = session.participants.size;
 
     socket.emit("existing_peers", {
-      roomId,
+      roomId: roomKey,
       peers,
       participantCount,
     });
 
-    socket.to(roomId).emit("user_joined_call", {
+    socket.to(roomKey).emit("user_joined_call", {
       peerId: socket.id,
       name,
       participantCount,
@@ -537,7 +541,6 @@ io.on("connection", (socket) => {
       handleLeaveCall(io, roomId, socket);
     }
   });
-});
 
 // ---------- START SERVER ----------
 
