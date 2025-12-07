@@ -111,8 +111,8 @@ function handleLeaveCall(io, rawRoomId, socket) {
 
 /**
  * Get the list of rooms visible to a specific socket
- *  - owner of the room
- *  - OR member (userId / guestId) in room.members
+ * - owner of the room
+ * - OR member (userId / guestId) in room.members
  */
 function filterRoomsForSocket(allRooms, socket) {
   const userEmail = socket.data?.userEmail || null;
@@ -180,7 +180,7 @@ io.on("connection", (socket) => {
   // ------- ROOMS CRUD -------
 
   socket.on("create_room", async (roomData) => {
-    try:
+    try {
       const ownerEmail = roomData.ownerId; // you send user.email from frontend
 
       if (!ownerEmail) {
@@ -541,6 +541,7 @@ io.on("connection", (socket) => {
       handleLeaveCall(io, roomId, socket);
     }
   });
+}); // <--- ADDED CLOSING BRACE HERE
 
 // ---------- START SERVER ----------
 
