@@ -22,7 +22,7 @@ const PORT = process.env.PORT || 5000;
 
 const allowedOrigins = [
   "http://localhost:5173",
-  process.env.FRONTEND_URL, // Your main production URL
+  process.env.FRONTEND_URL, // Your main production URL (e.g. https://lc-ai-frontend-mu.vercel.app)
 ].filter(Boolean);
 
 // specific function to check domains
@@ -111,8 +111,8 @@ function handleLeaveCall(io, rawRoomId, socket) {
 
 /**
  * Get the list of rooms visible to a specific socket
- * - owner of the room
- * - OR member (userId / guestId) in room.members
+ *  - owner of the room (by email or id, just in case)
+ *  - OR member (userId / guestId / email) in room.members
  */
 function filterRoomsForSocket(allRooms, socket) {
   const userEmail = socket.data?.userEmail || null;
@@ -124,14 +124,22 @@ function filterRoomsForSocket(allRooms, socket) {
   }
 
   return allRooms.filter((room) => {
-    const isOwner = userEmail && room.ownerId === userEmail;
+    const ownerId = room.ownerId;
+    const members = Array.isArray(room.members) ? room.members : [];
+    const memberIds = members.map((m) => String(m.id));
 
-    const isMember =
-      userId &&
-      Array.isArray(room.members) &&
-      room.members.some((m) => String(m.id) === String(userId));
+    // Owner checks (support both email or id stored as ownerId)
+    const isOwnerByEmail = userEmail && ownerId === userEmail;
+    const isOwnerById = userId && ownerId === String(userId);
 
-    return isOwner || isMember;
+    // Member checks (support both id and email stored in members[].id)
+    const isMemberByUserId = userId && memberIds.includes(String(userId));
+    const isMemberByEmail = userEmail && memberIds.includes(userEmail);
+
+    const visible =
+      isOwnerByEmail || isOwnerById || isMemberByUserId || isMemberByEmail;
+
+    return visible;
   });
 }
 
@@ -170,6 +178,7 @@ io.on("connection", (socket) => {
     socket.data.userId = userId ? String(userId) : null;
     socket.data.userEmail = email || null;
     console.log("🔐 register_user:", socket.data);
+
     // send initial room list for this user only
     broadcastRoomList(socket);
   });
@@ -192,7 +201,7 @@ io.on("connection", (socket) => {
         return;
       }
 
-      // 🔹 1) Enforce max 5 rooms per owner
+      // 1) Enforce max 5 rooms per owner
       const existingCount = await Room.countDocuments({ ownerId: ownerEmail });
       if (existingCount >= 5) {
         socket.emit("room_create_failed", {
@@ -202,24 +211,24 @@ io.on("connection", (socket) => {
         return;
       }
 
-      // 🔹 2) Generate a unique inviteLinkId (this is what Mongo's index is on)
+      // 2) Generate a unique inviteLinkId (this is what Mongo's index is on)
       const inviteLinkId =
         roomData.inviteLinkId || Math.random().toString(36).substring(2, 10);
 
       console.log("Creating room with inviteLinkId =", inviteLinkId);
 
-      // 🔹 3) Actually create the room
+      // 3) Actually create the room
       await Room.create({
         name: roomData.name,
         code: roomData.code,
         ownerId: ownerEmail, // usually user.email
         allowAI: roomData.allowAI,
-        inviteLinkId, // 👈 critical: NOT null
+        inviteLinkId, // NOT null
         inviteLink: roomData.inviteLink || inviteLinkId,
         members: roomData.members || [],
       });
 
-      // 🔹 4) Update room list, but only for the creator socket
+      // 4) Update room list, but only for the creator socket
       await broadcastRoomList(socket);
     } catch (err) {
       console.error("❌ ROOM SAVE FAILED:", err.message);
@@ -270,14 +279,12 @@ io.on("connection", (socket) => {
     }
   });
 
-  // 🔹 ROOM THEME CHANGE (UPDATED)
+  // 🔹 ROOM THEME CHANGE
   socket.on("change_room_theme", ({ roomId, theme, changedBy }) => {
     if (!roomId || !theme) return;
 
-    // Notify all clients to update the theme
     io.to(roomId).emit("room_theme_changed", { roomId, theme, changedBy });
 
-    // Also send a system message into the chat
     io.to(roomId).emit("system_message", {
       content: `${changedBy || "Someone"} changed the room theme to "${theme}"`,
       timestamp: Date.now(),
@@ -344,7 +351,6 @@ io.on("connection", (socket) => {
         displayName: name,
       });
 
-      // 🔁 system message so everyone (including guest) sees "<name> joined"
       io.to(roomId).emit("system_message", {
         content: `${name} joined`,
         timestamp: Date.now(),
@@ -367,7 +373,6 @@ io.on("connection", (socket) => {
     socket.join(roomKey);
 
     if (!alreadyInRoom) {
-      // system message to EVERYONE in that room (including the joining user)
       io.to(roomKey).emit("system_message", {
         content: `${displayName || "Someone"} joined`,
         timestamp: Date.now(),
@@ -541,7 +546,7 @@ io.on("connection", (socket) => {
       handleLeaveCall(io, roomId, socket);
     }
   });
-}); // <--- ADDED CLOSING BRACE HERE
+});
 
 // ---------- START SERVER ----------
 
