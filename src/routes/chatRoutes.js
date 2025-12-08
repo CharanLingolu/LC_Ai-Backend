@@ -1,6 +1,7 @@
 // src/routes/chatRoutes.js
 import express from "express";
 import dotenv from "dotenv";
+import Room from "../models/Room.js"; // 🔹 NEW: import Room to check allowAI
 
 dotenv.config();
 
@@ -59,6 +60,7 @@ async function handleChat(req, res, explicitMode) {
     const bodyMode = body.mode;
     const messages = body.messages;
 
+    // 🔹 For room-mode, we'll also expect roomId in body
     const mode = explicitMode || bodyMode || "friend";
 
     if (!Array.isArray(messages) || messages.length === 0) {
@@ -69,6 +71,37 @@ async function handleChat(req, res, explicitMode) {
       return res
         .status(500)
         .json({ error: "GEMINI_API_KEY is not configured" });
+    }
+
+    // 🔒 IMPORTANT: If we are in a room, enforce allowAI from DB
+    if (mode === "room") {
+      const roomId = body.roomId;
+
+      if (!roomId) {
+        return res
+          .status(400)
+          .json({ error: "roomId is required for room mode" });
+      }
+
+      try {
+        const room = await Room.findById(roomId);
+
+        if (!room) {
+          return res.status(404).json({ error: "Room not found" });
+        }
+
+        if (!room.allowAI) {
+          // Owner turned AI off → nobody can use it (owner or guests)
+          return res.status(403).json({
+            error: "AI is disabled by the room owner.",
+          });
+        }
+      } catch (err) {
+        console.error("Room lookup failed in chat route:", err);
+        return res
+          .status(500)
+          .json({ error: "Failed to validate room for AI" });
+      }
     }
 
     const systemPrompt = getSystemPrompt(mode);
@@ -128,11 +161,11 @@ async function handleChat(req, res, explicitMode) {
 
 // ---------- Routes ----------
 
-// Old style: POST /api/chat  with { mode, messages }
+// Old style: POST /api/chat  with { mode, messages, (optional roomId) }
 router.post("/", (req, res) => handleChat(req, res, null));
 
 // New style: POST /api/chat/:mode  (e.g. /friend, /room)
-// Not used by your current frontend, but kept for flexibility.
+// For /room, body must include { roomId, messages: [...] }
 router.post("/:mode", (req, res) => {
   const { mode } = req.params;
   handleChat(req, res, mode);
