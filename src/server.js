@@ -251,17 +251,43 @@ io.on("connection", (socket) => {
 
   socket.on("toggle_room_ai", async (roomId) => {
     try {
+      if (!roomId) return;
+
       const room = await Room.findById(roomId);
       if (!room) return;
 
+      const requesterEmail = socket.data.userEmail || null;
+      const requesterId = socket.data.userId || null;
+
+      // ✅ Only the owner can toggle AI
+      const isOwnerByEmail = requesterEmail && room.ownerId === requesterEmail;
+      const isOwnerById = requesterId && room.ownerId === String(requesterId);
+
+      if (!isOwnerByEmail && !isOwnerById) {
+        console.warn("❌ Unauthorized toggle_room_ai attempt", {
+          roomId,
+          requesterEmail,
+          requesterId,
+        });
+
+        socket.emit("room_ai_toggle_failed", {
+          reason: "NOT_OWNER",
+          message: "Only the room owner can change AI settings.",
+        });
+        return;
+      }
+
+      // Owner is valid → toggle
       room.allowAI = !room.allowAI;
       await room.save();
 
+      // 1) Notify everyone in that room that AI has been toggled
       io.to(roomId).emit("room_ai_toggled", {
         roomId,
         allowAI: room.allowAI,
       });
 
+      // 2) Refresh room list only for this socket
       await broadcastRoomList(socket);
     } catch (err) {
       console.error("❌ toggle_room_ai error:", err.message);
