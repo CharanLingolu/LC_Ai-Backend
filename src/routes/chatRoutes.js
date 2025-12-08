@@ -1,7 +1,7 @@
 // src/routes/chatRoutes.js
 import express from "express";
 import dotenv from "dotenv";
-import Room from "../models/Room.js"; // 🔹 NEW: import Room to check allowAI
+import Room from "../models/Room.js"; // 🔹 Import Room to check allowAI
 
 dotenv.config();
 
