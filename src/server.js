@@ -12,6 +12,7 @@ import chatRoutes from "./routes/chatRoutes.js";
 
 import Room from "./models/Room.js";
 import Message from "./models/Message.js";
+import streamRoutes from "./routes/streamRoutes.js";
 
 dotenv.config();
 
@@ -49,6 +50,7 @@ const corsOptions = {
 
 app.use(cors(corsOptions));
 app.use(express.json());
+app.use("/api/stream", streamRoutes);
 
 // --- HTTP SERVER + SOCKET.IO -------------------------------------
 

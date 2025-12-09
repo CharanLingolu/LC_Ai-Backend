@@ -16,6 +16,8 @@
     "@google/generative-ai": "^0.24.1",
     "@langchain/core": "^1.1.2",
     "@langchain/google-genai": "^2.0.2",
+    "@stream-io/node-sdk": "^0.7.26",
+    "@stream-io/video-react-sdk": "^1.28.1",
     "bcryptjs": "^3.0.3",
     "cors": "^2.8.5",
     "dotenv": "^17.2.3",
