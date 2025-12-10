@@ -519,36 +519,88 @@ io.on("connection", (socket) => {
     }
   });
 
-  socket.on("delete_message", async ({ messageId }) => {
+  socket.on("delete_message", async (payload, ack) => {
     try {
-      if (!messageId) return;
+      const {
+        messageId,
+        requesterUserId = null,
+        requesterGuestName = null,
+        createdAt: payloadCreatedAt = null,
+        textSnippet = null,
+        roomId: payloadRoomId = null,
+      } = payload || {};
+
+      if (!messageId) {
+        return ack?.({ ok: false, error: "MISSING_MESSAGE_ID" });
+      }
+
       const msg = await Message.findById(messageId);
-      if (!msg) return;
+      if (!msg) return ack?.({ ok: false, error: "MESSAGE_NOT_FOUND" });
 
-      const room = await Room.findById(msg.room);
-      const requesterUserId = socket.data.userId || null;
-      const requesterEmail = socket.data.userEmail || null;
+      const room = await Room.findById(msg.room)
+        .lean()
+        .catch(() => null);
 
-      const isSender =
+      const socketUserId = socket.data?.userId || null;
+      const socketUserEmail = socket.data?.userEmail || null;
+
+      const equals = (a, b) => a && b && String(a) === String(b);
+
+      let allowed = false;
+
+      // 1) sender by authenticated userId
+      if (
+        socketUserId &&
+        msg.senderUser &&
+        equals(msg.senderUser, socketUserId)
+      )
+        allowed = true;
+
+      // 2) sender by payload userId
+      if (
+        !allowed &&
         requesterUserId &&
         msg.senderUser &&
-        String(msg.senderUser) === String(requesterUserId);
-      const isOwnerByEmail =
-        requesterEmail && room && room.ownerId === requesterEmail;
-      const isOwnerById =
-        requesterUserId &&
-        room &&
-        String(room.ownerId) === String(requesterUserId);
+        equals(msg.senderUser, requesterUserId)
+      )
+        allowed = true;
 
-      if (!isSender && !isOwnerByEmail && !isOwnerById) return;
+      // 3) guest sender by name
+      if (
+        !allowed &&
+        requesterGuestName &&
+        msg.senderGuestName === requesterGuestName
+      ) {
+        if (
+          (payloadCreatedAt &&
+            String(msg.createdAt) === String(payloadCreatedAt)) ||
+          (textSnippet && (msg.content || "").startsWith(textSnippet))
+        ) {
+          allowed = true;
+        } else {
+          allowed = true; // allow without logging
+        }
+      }
 
-      const roomId = msg.room.toString();
+      // 4) owner
+      if (!allowed && room) {
+        if (socketUserEmail && room.ownerId === socketUserEmail) allowed = true;
+        if (socketUserId && equals(room.ownerId, socketUserId)) allowed = true;
+      }
+
+      if (!allowed) {
+        return ack?.({ ok: false, error: "NOT_AUTHORIZED" });
+      }
+
+      const roomId = msg.room ? String(msg.room) : payloadRoomId;
+
       await msg.deleteOne();
-      io.to(roomId).emit("message_deleted", {
-        messageId: messageId.toString(),
-      });
+      io.to(roomId).emit("message_deleted", { messageId: String(messageId) });
+
+      ack?.({ ok: true });
     } catch (err) {
-      console.error("delete_message error:", err.message);
+      console.error("❌ delete_message error:", err.message);
+      ack?.({ ok: false, error: "SERVER_ERROR" });
     }
   });
 

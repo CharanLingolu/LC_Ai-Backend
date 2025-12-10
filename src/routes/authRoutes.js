@@ -1,3 +1,4 @@
+// routes/authRoutes.js
 import express from "express";
 import jwt from "jsonwebtoken";
 import bcrypt from "bcryptjs";
@@ -39,7 +40,6 @@ router.post("/signup/request-otp", async (req, res) => {
     const otpExpiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
 
     if (!user) {
-      // Create new unverified user
       user = await User.create({
         name,
         email,
@@ -50,7 +50,6 @@ router.post("/signup/request-otp", async (req, res) => {
         otpExpiresAt,
       });
     } else {
-      // Update existing unverified user
       user.name = name;
       user.passwordHash = passwordHash;
       user.otpCode = otpCode;
@@ -58,12 +57,10 @@ router.post("/signup/request-otp", async (req, res) => {
       await user.save();
     }
 
-    // Send OTP through email (for dev, you can log instead)
     try {
       await sendOtpEmail(email, otpCode);
     } catch (mailErr) {
       console.error("Failed to send OTP email:", mailErr.message);
-      // For dev, also send OTP in response so you can test:
       return res.json({
         message: "OTP generated (email failed). Using dev mode.",
         devOtp: otpCode,
@@ -85,7 +82,6 @@ router.post("/signup/verify-otp", async (req, res) => {
       return res.status(400).json({ error: "Email and OTP are required" });
     }
 
-    // ❗ changed: search only by email
     const user = await User.findOne({ email });
 
     if (!user) {
@@ -123,6 +119,52 @@ router.post("/signup/verify-otp", async (req, res) => {
     });
   } catch (err) {
     console.error("Verify OTP error:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+// --------------- LOGIN (email/password) ---------------
+router.post("/login", async (req, res) => {
+  try {
+    const { email, password } = req.body || {};
+    if (!email || !password) {
+      return res.status(400).json({ error: "Email and password are required" });
+    }
+
+    const user = await User.findOne({ email });
+    if (!user) {
+      return res.status(400).json({ error: "Invalid credentials" });
+    }
+
+    if (user.provider !== "local") {
+      return res.status(400).json({
+        error:
+          user.provider === "google"
+            ? "Please sign in with Google"
+            : "Use your original sign-in method",
+      });
+    }
+
+    const ok = await bcrypt.compare(password, user.passwordHash);
+    if (!ok) return res.status(400).json({ error: "Invalid credentials" });
+
+    if (!user.isVerified)
+      return res.status(403).json({ error: "Email not verified" });
+
+    const token = signToken(user);
+
+    res.json({
+      token,
+      user: {
+        id: user._id.toString(),
+        name: user.name,
+        email: user.email,
+        avatar: user.avatar,
+        provider: user.provider,
+      },
+    });
+  } catch (err) {
+    console.error("Login error:", err);
     res.status(500).json({ error: "Server error" });
   }
 });
