@@ -317,6 +317,58 @@ io.on("connection", (socket) => {
     }
   });
 
+  // ------- New: Authenticated join by code -------
+  socket.on(
+    "join_room_authenticated",
+    async ({ code, userId, email, userName }, callback) => {
+      try {
+        if (!code || (!userId && !email)) {
+          return callback?.({ ok: false, error: "missing_data" });
+        }
+
+        const roomDoc = await Room.findOne({ code });
+        if (!roomDoc) {
+          return callback?.({ ok: false, error: "room_not_found" });
+        }
+
+        const roomId = roomDoc._id.toString();
+        const memberIds = (roomDoc.members || []).map((m) => String(m.id));
+        const byEmail = email && memberIds.includes(String(email));
+        const byUserId = userId && memberIds.includes(String(userId));
+
+        // Add member if not present (prefer attaching by userId if available)
+        if (!byEmail && !byUserId) {
+          roomDoc.members.push({
+            id: userId ? String(userId) : email,
+            name: userName || email || "Member",
+            role: "member",
+          });
+          await roomDoc.save();
+        }
+
+        // Join socket to room for presence/messages
+        socket.join(roomId);
+        socket.data.userId = userId ? String(userId) : socket.data.userId;
+        socket.data.userEmail = email || socket.data.userEmail;
+
+        // Respond with the room document so client can update UI
+        callback?.({ ok: true, room: roomDoc.toObject() });
+
+        // Notify room and update lists/presence
+        io.to(roomId).emit("system_message", {
+          content: `${userName || email || "Someone"} joined the room.`,
+          timestamp: Date.now(),
+        });
+
+        emitActiveUsersCount(roomId);
+        await broadcastRoomList();
+      } catch (err) {
+        console.error("join_room_authenticated error:", err);
+        callback?.({ ok: false, error: "server_error" });
+      }
+    }
+  );
+
   // ------- GUEST JOIN -------
 
   socket.on("join_room_guest", async ({ code, name, guestId }) => {
@@ -371,12 +423,27 @@ io.on("connection", (socket) => {
 
   // ------- CHAT JOIN / LEAVE -------
 
-  socket.on("join_room", ({ roomId, displayName }) => {
+  socket.on("join_room", async ({ roomId, displayName }) => {
     if (!roomId) return;
     const roomKey = String(roomId);
-    const alreadyInRoom = socket.rooms.has(roomKey);
+
+    // join socket room for presence + chat
     socket.join(roomKey);
 
+    // send a system message to everyone in the room that someone joined
+    try {
+      io.to(roomKey).emit("system_message", {
+        content: `${displayName || "Someone"} joined`,
+        timestamp: Date.now(),
+        roomId: roomKey,
+        type: "join", // optional: helpful for client handling
+        displayName: displayName || null,
+      });
+    } catch (err) {
+      console.error("system_message emit error:", err);
+    }
+
+    // if a call session is live tell the just-joined socket
     const session = callSessions.get(roomKey);
     if (session) {
       socket.emit("call_started", {
@@ -385,7 +452,15 @@ io.on("connection", (socket) => {
       });
     }
 
+    // update presence counts for everyone
     emitActiveUsersCount(roomKey);
+
+    // ensure server room list is broadcast to sockets (so members count etc refresh)
+    try {
+      await broadcastRoomList();
+    } catch (e) {
+      // ignore broadcast errors
+    }
   });
 
   socket.on("leave_room", ({ roomId }) => {
