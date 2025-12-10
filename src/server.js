@@ -1,23 +1,36 @@
-// src/server.js
+// 1️⃣ CRITICAL FIX: Load dotenv variables BEFORE anything else
+import "dotenv/config";
+
 import express from "express";
 import cors from "cors";
-import dotenv from "dotenv";
 import mongoose from "mongoose";
 import { createServer } from "http";
 import { Server } from "socket.io";
 
 import authRoutes from "./routes/authRoutes.js";
 import roomRoutes from "./routes/roomRoutes.js";
-import chatRoutes from "./routes/chatRoutes.js";
+import chatRoutes from "./routes/chatRoutes.js"; // Now this will see the API Key
 
 import Room from "./models/Room.js";
 import Message from "./models/Message.js";
 import streamRoutes from "./routes/streamRoutes.js";
+import uploadRoutes from "./routes/uploadRoutes.js";
 
-dotenv.config();
+// 🔍 Debugging: Verify key is loaded
+console.log(
+  "🔍 DEBUG CHECK: GEMINI_API_KEY is:",
+  process.env.GEMINI_API_KEY ? "LOADED ✅" : "MISSING ❌"
+);
 
 const app = express();
 const PORT = process.env.PORT || 5000;
+
+// server.js (add)
+console.log("🔍 FRONTEND_URL:", process.env.FRONTEND_URL);
+console.log(
+  "🔍 VITE_SOCKET_URL (client-side should match):",
+  process.env.VITE_SOCKET_URL
+);
 
 // --- CORS CONFIG -------------------------------------------------
 
@@ -50,7 +63,10 @@ const corsOptions = {
 
 app.use(cors(corsOptions));
 app.use(express.json());
+
+// extra routes
 app.use("/api/stream", streamRoutes);
+app.use("/api/upload", uploadRoutes);
 
 // --- HTTP SERVER + SOCKET.IO -------------------------------------
 
@@ -65,7 +81,6 @@ const io = new Server(httpServer, {
 });
 
 // In-memory call sessions
-// Map<roomKey (string), { startedBy, startedAt, maxParticipants, participants: Map<socketId, name> }>
 const callSessions = new Map();
 
 // --- BASIC ROUTE -------------------------------------------------
@@ -107,8 +122,6 @@ function handleLeaveCall(io, rawRoomId, socket) {
 
 /**
  * Get the list of rooms visible to a specific socket
- *  - owner of the room (by email or id, just in case)
- *  - OR member (userId / guestId / email) in room.members
  */
 function filterRoomsForSocket(allRooms, socket) {
   const userEmail = socket.data?.userEmail || null;
@@ -156,13 +169,14 @@ async function broadcastRoomList(targetSocket = null) {
 }
 
 /**
- * Emit current online count for a room using Socket.IO adapter
+ * Emit current online count for a room
  */
 function emitActiveUsersCount(roomKey) {
-  const room = io.sockets.adapter.rooms.get(String(roomKey));
+  const key = String(roomKey);
+  const room = io.sockets.adapter.rooms.get(key);
   const count = room ? room.size : 0;
-  io.to(String(roomKey)).emit("active_users_update", {
-    roomId: String(roomKey),
+  io.to(key).emit("active_users_update", {
+    roomId: key,
     count,
   });
 }
@@ -172,7 +186,7 @@ function emitActiveUsersCount(roomKey) {
 io.on("connection", (socket) => {
   console.log("🟢 Socket connected:", socket.id);
 
-  // 1️⃣ Register which user this socket belongs to
+  // 1️⃣ Register user
   socket.on("register_user", ({ userId, email }) => {
     socket.data.userId = userId ? String(userId) : null;
     socket.data.userEmail = email || null;
@@ -190,10 +204,9 @@ io.on("connection", (socket) => {
       const ownerEmail = roomData.ownerId;
 
       if (!ownerEmail) {
-        console.warn("create_room called without ownerId/email");
         socket.emit("room_create_failed", {
           reason: "MISSING_OWNER",
-          message: "Owner email is required to create a room.",
+          message: "Owner email is required.",
         });
         return;
       }
@@ -210,8 +223,6 @@ io.on("connection", (socket) => {
       const inviteLinkId =
         roomData.inviteLinkId || Math.random().toString(36).substring(2, 10);
 
-      console.log("Creating room with inviteLinkId =", inviteLinkId);
-
       await Room.create({
         name: roomData.name,
         code: roomData.code,
@@ -227,7 +238,7 @@ io.on("connection", (socket) => {
       console.error("❌ ROOM SAVE FAILED:", err.message);
       socket.emit("room_create_failed", {
         reason: "SERVER_ERROR",
-        message: "Failed to create room. Try again later.",
+        message: "Failed to create room.",
       });
     }
   });
@@ -251,27 +262,20 @@ io.on("connection", (socket) => {
     }
   });
 
+  // ------- TOGGLE ROOM AI -------
+
   socket.on("toggle_room_ai", async (roomId) => {
     try {
       if (!roomId) return;
-
       const room = await Room.findById(roomId);
       if (!room) return;
 
       const requesterEmail = socket.data.userEmail || null;
       const requesterId = socket.data.userId || null;
-
-      // ✅ Only the owner can toggle AI
       const isOwnerByEmail = requesterEmail && room.ownerId === requesterEmail;
       const isOwnerById = requesterId && room.ownerId === String(requesterId);
 
       if (!isOwnerByEmail && !isOwnerById) {
-        console.warn("❌ Unauthorized toggle_room_ai attempt", {
-          roomId,
-          requesterEmail,
-          requesterId,
-        });
-
         socket.emit("room_ai_toggle_failed", {
           reason: "NOT_OWNER",
           message: "Only the room owner can change AI settings.",
@@ -279,17 +283,14 @@ io.on("connection", (socket) => {
         return;
       }
 
-      // Owner is valid → toggle
       room.allowAI = !room.allowAI;
       await room.save();
 
-      // 1) Notify everyone in that room that AI has been toggled
-      io.to(roomId).emit("room_ai_toggled", {
-        roomId,
+      io.to(String(roomId)).emit("room_ai_toggled", {
+        roomId: String(roomId),
         allowAI: room.allowAI,
       });
 
-      // 2) Refresh room list only for this socket
       await broadcastRoomList(socket);
     } catch (err) {
       console.error("❌ toggle_room_ai error:", err.message);
@@ -299,10 +300,9 @@ io.on("connection", (socket) => {
   // 🔹 ROOM THEME CHANGE
   socket.on("change_room_theme", ({ roomId, theme, changedBy }) => {
     if (!roomId || !theme) return;
-
-    io.to(roomId).emit("room_theme_changed", { roomId, theme, changedBy });
-
-    io.to(roomId).emit("system_message", {
+    const key = String(roomId);
+    io.to(key).emit("room_theme_changed", { roomId: key, theme, changedBy });
+    io.to(key).emit("system_message", {
       content: `${changedBy || "Someone"} changed the room theme to "${theme}"`,
       timestamp: Date.now(),
     });
@@ -313,12 +313,11 @@ io.on("connection", (socket) => {
       const room = await Room.findOne({ code }).lean();
       callback(room || null);
     } catch (err) {
-      console.error("verify_room_code error:", err);
       callback(null);
     }
   });
 
-  // ------- GUEST JOIN (by secret code) -------
+  // ------- GUEST JOIN -------
 
   socket.on("join_room_guest", async ({ code, name, guestId }) => {
     try {
@@ -334,26 +333,19 @@ io.on("connection", (socket) => {
       }
 
       const roomId = room._id.toString();
-
       const stableGuestId =
         guestId || `guest_${Math.random().toString(36).substring(2, 10)}`;
 
       if (!room.inviteLinkId) {
-        const newId = Math.random().toString(36).substring(2, 10);
-        room.inviteLinkId = newId;
-        if (!room.inviteLink) room.inviteLink = newId;
+        room.inviteLinkId = Math.random().toString(36).substring(2, 10);
+        room.inviteLink = room.inviteLinkId;
       }
 
       if (!room.members.some((m) => String(m.id) === String(stableGuestId))) {
-        room.members.push({
-          id: stableGuestId,
-          name,
-          role: "guest",
-        });
+        room.members.push({ id: stableGuestId, name, role: "guest" });
       }
 
       await room.save();
-
       socket.join(roomId);
 
       socket.data.userId = stableGuestId;
@@ -373,7 +365,6 @@ io.on("connection", (socket) => {
       await broadcastRoomList(socket);
       emitActiveUsersCount(roomId);
     } catch (err) {
-      console.error("join_room_guest error:", err.message);
       socket.emit("guest_join_failed", { reason: "SERVER_ERROR" });
     }
   });
@@ -382,7 +373,6 @@ io.on("connection", (socket) => {
 
   socket.on("join_room", ({ roomId, displayName }) => {
     if (!roomId) return;
-
     const roomKey = String(roomId);
     const alreadyInRoom = socket.rooms.has(roomKey);
     socket.join(roomKey);
@@ -402,7 +392,6 @@ io.on("connection", (socket) => {
       });
     }
 
-    // ⭐ ONLINE COUNT: adapter-based
     emitActiveUsersCount(roomKey);
   });
 
@@ -412,45 +401,93 @@ io.on("connection", (socket) => {
     emitActiveUsersCount(roomKey);
   });
 
-  // ------- SEND MESSAGE + REACTIONS -------
+  // ------- SEND MESSAGE -------
 
   socket.on("send_message", async (data) => {
     try {
+      const roomKey = String(data.roomId);
+      if (!roomKey) return;
+
       const saved = await Message.create({
         room: data.roomId,
         senderUser: data.senderUserId || null,
         senderGuestName: data.senderGuestName || null,
-        role: data.role,
-        content: data.text,
+        role: data.role || "user",
+        content: data.text || "",
+        mediaUrl: data.mediaUrl || null,
+        mediaType: data.mediaType || null,
+        mediaName: data.mediaName || null,
+        mimeType: data.mimeType || null,
       });
 
       const payload = {
         _id: saved._id.toString(),
         roomId: saved.room.toString(),
-        text: saved.content,
+        text: saved.content || "",
         role: saved.role,
         senderUserId: saved.senderUser || null,
         senderGuestName: saved.senderGuestName || null,
         createdAt: saved.createdAt,
         reactions: saved.reactions || [],
+        mediaUrl: saved.mediaUrl || null,
+        mediaType: saved.mediaType || null,
+        mediaName: saved.mediaName || null,
       };
 
-      io.to(data.roomId).emit("receive_message", payload);
+      io.to(roomKey).emit("receive_message", payload);
     } catch (e) {
       console.warn("Message save error (non-fatal):", e.message);
-
-      io.to(data.roomId).emit("receive_message", {
-        ...data,
+      const roomKey = String(data.roomId);
+      io.to(roomKey).emit("receive_message", {
         _id: `temp-${Date.now()}`,
+        roomId: roomKey,
+        text: data.text || "",
+        role: data.role || "user",
         createdAt: new Date().toISOString(),
+        mediaUrl: data.mediaUrl || null,
+        mediaName: data.mediaName || null,
         reactions: [],
       });
     }
   });
 
+  socket.on("delete_message", async ({ messageId }) => {
+    try {
+      if (!messageId) return;
+      const msg = await Message.findById(messageId);
+      if (!msg) return;
+
+      const room = await Room.findById(msg.room);
+      const requesterUserId = socket.data.userId || null;
+      const requesterEmail = socket.data.userEmail || null;
+
+      const isSender =
+        requesterUserId &&
+        msg.senderUser &&
+        String(msg.senderUser) === String(requesterUserId);
+      const isOwnerByEmail =
+        requesterEmail && room && room.ownerId === requesterEmail;
+      const isOwnerById =
+        requesterUserId &&
+        room &&
+        String(room.ownerId) === String(requesterUserId);
+
+      if (!isSender && !isOwnerByEmail && !isOwnerById) return;
+
+      const roomId = msg.room.toString();
+      await msg.deleteOne();
+      io.to(roomId).emit("message_deleted", {
+        messageId: messageId.toString(),
+      });
+    } catch (err) {
+      console.error("delete_message error:", err.message);
+    }
+  });
+
   socket.on("typing", ({ roomId, displayName }) => {
     if (!roomId || !displayName) return;
-    socket.to(roomId).emit("typing", { roomId, displayName });
+    const key = String(roomId);
+    socket.to(key).emit("typing", { roomId: key, displayName });
   });
 
   socket.on(
@@ -458,7 +495,6 @@ io.on("connection", (socket) => {
     async ({ messageId, emoji, userId, displayName }) => {
       try {
         if (!messageId || !emoji || !userId) return;
-
         const msg = await Message.findById(messageId);
         if (!msg) return;
 
@@ -476,15 +512,9 @@ io.on("connection", (socket) => {
         }
 
         await msg.save();
-
-        const roomId = msg.room.toString();
-        io.to(roomId).emit("reactionUpdated", {
+        io.to(msg.room.toString()).emit("reactionUpdated", {
           messageId: msg._id.toString(),
-          reactions: msg.reactions.map((r) => ({
-            emoji: r.emoji,
-            userId: r.userId,
-            displayName: r.displayName,
-          })),
+          reactions: msg.reactions,
         });
       } catch (err) {
         console.error("addReaction error:", err.message);
@@ -500,7 +530,6 @@ io.on("connection", (socket) => {
     const name = displayName || "User";
 
     let session = callSessions.get(roomKey);
-
     if (!session) {
       session = {
         startedBy: name,
@@ -509,15 +538,12 @@ io.on("connection", (socket) => {
         participants: new Map(),
       };
       callSessions.set(roomKey, session);
-
-      socket.to(roomKey).emit("call_started", {
-        roomId: roomKey,
-        startedBy: name,
-      });
+      socket
+        .to(roomKey)
+        .emit("call_started", { roomId: roomKey, startedBy: name });
     }
 
     socket.join(roomKey);
-
     session.participants.set(socket.id, name);
     session.maxParticipants = Math.max(
       session.maxParticipants,
@@ -528,25 +554,19 @@ io.on("connection", (socket) => {
       .filter(([id]) => id !== socket.id)
       .map(([id, peerName]) => ({ peerId: id, name: peerName }));
 
-    const participantCount = session.participants.size;
-
     socket.emit("existing_peers", {
       roomId: roomKey,
       peers,
-      participantCount,
+      participantCount: session.participants.size,
     });
-
     socket.to(roomKey).emit("user_joined_call", {
       peerId: socket.id,
       name,
-      participantCount,
+      participantCount: session.participants.size,
     });
   });
 
-  socket.on("leave_call", ({ roomId }) => {
-    handleLeaveCall(io, roomId, socket);
-  });
-
+  socket.on("leave_call", ({ roomId }) => handleLeaveCall(io, roomId, socket));
   socket.on("webrtc_offer", (d) =>
     io.to(d.to).emit("webrtc_offer", { from: socket.id, sdp: d.sdp })
   );
@@ -561,19 +581,11 @@ io.on("connection", (socket) => {
 
   socket.on("disconnect", () => {
     console.log("🔴 Socket disconnected:", socket.id);
-
-    // For each room the socket was in (except its own room),
-    // send updated online count
-    const joinedRooms = [...socket.rooms].filter(
-      (roomKey) => roomKey !== socket.id
-    );
-    joinedRooms.forEach((roomKey) => {
-      emitActiveUsersCount(roomKey);
+    [...socket.rooms].forEach((roomKey) => {
+      if (roomKey !== socket.id) emitActiveUsersCount(roomKey);
     });
-
-    for (const [roomId] of callSessions.entries()) {
+    for (const [roomId] of callSessions.entries())
       handleLeaveCall(io, roomId, socket);
-    }
   });
 });
 

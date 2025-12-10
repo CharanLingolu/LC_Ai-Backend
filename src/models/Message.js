@@ -1,6 +1,9 @@
+// src/models/Message.js
 import mongoose from "mongoose";
 
-const reactionSchema = new mongoose.Schema(
+const { Schema } = mongoose;
+
+const reactionSchema = new Schema(
   {
     emoji: { type: String, required: true },
 
@@ -13,16 +16,47 @@ const reactionSchema = new mongoose.Schema(
   { _id: false }
 );
 
-const messageSchema = new mongoose.Schema(
+const messageSchema = new Schema(
   {
-    room: { type: mongoose.Schema.Types.ObjectId, ref: "Room", required: true },
+    // 🔹 Room reference (Room _id)
+    room: { type: Schema.Types.ObjectId, ref: "Room", required: true },
 
-    senderUser: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+    // 🔹 Who sent it
+    senderUser: { type: Schema.Types.ObjectId, ref: "User" },
     senderGuestName: { type: String },
 
-    role: { type: String, enum: ["user", "ai", "system"], required: true },
+    // 🔹 "user" | "ai" | "system"
+    role: {
+      type: String,
+      enum: ["user", "ai", "system"],
+      required: true,
+    },
 
-    content: { type: String, required: true },
+    /**
+     * MAIN MESSAGE TEXT
+     *
+     * For normal chat messages → the actual text.
+     * For media messages → optional (you can leave empty),
+     * because we have `required` depending on `mediaUrl`.
+     */
+    content: {
+      type: String,
+      required: function () {
+        // `this` is the mongoose document
+        return !this.mediaUrl;
+      },
+    },
+
+    /**
+     * OPTIONAL MEDIA FIELDS
+     * Used for file / image / video messages.
+     */
+    mediaUrl: {
+      type: String, // Cloudinary URL or similar
+    },
+    mediaType: {
+      type: String, // e.g. "image", "video", "file"
+    },
 
     reactions: {
       type: [reactionSchema],
@@ -32,6 +66,24 @@ const messageSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-// Use existing model if hot reload, else create
-export default mongoose.models.Message ||
-  mongoose.model("Message", messageSchema);
+/**
+ * 🔁 Shape returned to frontend
+ *
+ * - Your RoomChat uses `text`
+ * - We mirror `content` → `text`
+ */
+messageSchema.set("toJSON", {
+  transform(doc, ret) {
+    ret.id = ret._id;
+    ret.text = ret.content || "";
+    // mediaUrl, mediaType, reactions remain as-is
+    delete ret.__v;
+    return ret;
+  },
+});
+
+// Reuse model if hot reload, else create
+const Message =
+  mongoose.models.Message || mongoose.model("Message", messageSchema);
+
+export default Message;
