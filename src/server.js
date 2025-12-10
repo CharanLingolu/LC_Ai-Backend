@@ -377,13 +377,6 @@ io.on("connection", (socket) => {
     const alreadyInRoom = socket.rooms.has(roomKey);
     socket.join(roomKey);
 
-    if (!alreadyInRoom) {
-      io.to(roomKey).emit("system_message", {
-        content: `${displayName || "Someone"} joined`,
-        timestamp: Date.now(),
-      });
-    }
-
     const session = callSessions.get(roomKey);
     if (session) {
       socket.emit("call_started", {
