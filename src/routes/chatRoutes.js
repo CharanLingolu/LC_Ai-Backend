@@ -120,19 +120,64 @@ async function handleChat(req, res, explicitMode) {
 
     const url = `https://generativelanguage.googleapis.com/v1/models/${MODEL_ID}:generateContent?key=${GEMINI_API_KEY}`;
 
-    const resp = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ contents }),
-    });
+    let resp;
+    let data;
 
-    const data = await resp.json();
+    try {
+      resp = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ contents }),
+      });
+    } catch (fetchErr) {
+      // network/fetch-level error (DNS, connectivity, etc.)
+      console.error("🛑 Gemini fetch threw an error:", fetchErr);
+      return res.status(502).json({
+        error: "Failed to reach Gemini API",
+        details: fetchErr.message,
+      });
+    }
 
+    try {
+      data = await resp.json();
+    } catch (jsonErr) {
+      console.error("🛑 Failed to parse Gemini response JSON:", jsonErr);
+      console.error(
+        "🛑 raw status:",
+        resp.status,
+        "statusText:",
+        resp.statusText
+      );
+      const rawText = await resp.text().catch(() => "<unreadable>");
+      console.error(
+        "🛑 raw body:",
+        rawText.slice ? rawText.slice(0, 2000) : "<no-body>"
+      );
+      return res.status(502).json({
+        error: "Invalid JSON from Gemini API",
+        status: resp.status,
+        statusText: resp.statusText,
+      });
+    }
+
+    // If Gemini returned non-OK, log full body for diagnostics
     if (!resp.ok) {
-      console.error("🛑 Gemini error:", data);
+      console.error("🛑 Gemini error (status):", resp.status, resp.statusText);
+      // log full response body (capped)
+      try {
+        console.error(
+          "🛑 Gemini error body:",
+          JSON.stringify(data).slice(0, 4000)
+        );
+      } catch (e) {
+        console.error("🛑 Could not stringify Gemini error body", e);
+      }
+
       const msg =
-        data.error?.message || "Gemini request failed (non-OK response)";
-      return res.status(500).json({ error: msg });
+        data.error?.message ||
+        data.error?.errors?.[0]?.message ||
+        "Gemini request failed (non-OK response)";
+      return res.status(500).json({ error: msg, details: data });
     }
 
     const parts = data.candidates?.[0]?.content?.parts || [];
@@ -144,17 +189,21 @@ async function handleChat(req, res, explicitMode) {
         .trim() || "";
 
     if (!text) {
-      return res.status(500).json({ error: "No reply from AI" });
+      console.error(
+        "🛑 Gemini returned empty text. Full response:",
+        JSON.stringify(data).slice(0, 2000)
+      );
+      return res.status(500).json({ error: "No reply from AI", details: data });
     }
 
     res.json({
       reply: { role: "assistant", content: text },
     });
   } catch (err) {
-    console.error("🛑 Chat route error:", err);
+    console.error("🛑 Chat route error:", err && err.stack ? err.stack : err);
     res.status(500).json({
       error: "AI Request Failed",
-      details: err.message,
+      details: err?.message,
     });
   }
 }

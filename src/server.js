@@ -1,5 +1,20 @@
-// 1️⃣ CRITICAL FIX: Load dotenv variables BEFORE anything else
-import "dotenv/config";
+import dotenv from "dotenv";
+import path from "path";
+import { fileURLToPath } from "url";
+
+// force the backend to load the .env from project root
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+dotenv.config({
+  path: path.join(__dirname, "../.env"), // 🔥 always correct absolute path
+});
+
+console.log(
+  "ENV CHECK (backend):",
+  !!process.env.GEMINI_API_KEY,
+  process.env.GEMINI_API_KEY?.slice(0, 10)
+);
 
 import express from "express";
 import cors from "cors";
@@ -32,52 +47,65 @@ console.log(
   process.env.VITE_SOCKET_URL
 );
 
-// --- CORS CONFIG -------------------------------------------------
+// --- CORS CONFIG (replace current cors setup with this) ---
+const frontendLocal = "http://localhost:5173"; // or 3000, 3001 — whatever your dev server uses
+const extraLocalHosts = [
+  "http://localhost:3000",
+  "http://127.0.0.1:5173",
+  "http://127.0.0.1:3000",
+];
 
-const allowedOrigins = [
-  "http://localhost:5173",
-  process.env.FRONTEND_URL,
-].filter(Boolean);
+const allowedOrigins = new Set(
+  [
+    frontendLocal,
+    process.env.FRONTEND_URL, // e.g. https://lc-ai-frontend.vercel.app
+    process.env.VITE_SOCKET_URL &&
+      process.env.VITE_SOCKET_URL.replace(/^https?:\/\//, (m) => m), // not required but kept
+    ...extraLocalHosts,
+  ].filter(Boolean)
+);
 
-const validateOrigin = (origin, callback) => {
-  if (!origin) return callback(null, true);
-
-  if (allowedOrigins.includes(origin)) {
-    return callback(null, true);
-  }
-
-  if (origin.endsWith(".vercel.app") && origin.includes("lc-ai")) {
-    return callback(null, true);
-  }
-
-  console.log("❌ Blocked by CORS:", origin);
-  return callback(new Error("Not allowed by CORS"), false);
-};
+function originAllowed(origin) {
+  if (!origin) return true; // allow non-browser ws clients or null origin in dev
+  // allow local hosts and a pattern for vercel
+  if (allowedOrigins.has(origin)) return true;
+  if (origin.endsWith(".vercel.app") && origin.includes("lc-ai")) return true;
+  // allow specific rendered hostname from env
+  if (process.env.FRONTEND_URL && origin === process.env.FRONTEND_URL)
+    return true;
+  return false;
+}
 
 const corsOptions = {
-  origin: validateOrigin,
+  origin: (origin, callback) => {
+    if (originAllowed(origin)) return callback(null, true);
+    console.log("❌ Blocked by CORS:", origin);
+    return callback(new Error("Not allowed by CORS"), false);
+  },
   methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
   allowedHeaders: ["Content-Type", "Authorization"],
   credentials: true,
 };
 
 app.use(cors(corsOptions));
+// removed global app.options(...) because it triggers path-to-regexp error in this router version
 app.use(express.json());
 
-// extra routes
-app.use("/api/stream", streamRoutes);
-app.use("/api/upload", uploadRoutes);
-
-// --- HTTP SERVER + SOCKET.IO -------------------------------------
-
+// ---------- IMPORTANT: create httpServer BEFORE socket.io -----------
 const httpServer = createServer(app);
 
+// socket.io: use the same origin function
 const io = new Server(httpServer, {
   cors: {
-    origin: validateOrigin,
+    origin: (origin, callback) => {
+      if (originAllowed(origin)) return callback(null, true);
+      console.log("❌ Socket blocked by CORS (socket.io):", origin);
+      return callback(new Error("Not allowed by CORS"), false);
+    },
     methods: ["GET", "POST"],
     credentials: true,
   },
+  allowEIO3: false, // you use EIO=4 on client; keep false. Set to true only if you need EIO3 compatibility.
 });
 
 // In-memory call sessions
@@ -89,10 +117,25 @@ app.get("/", (req, res) => {
   res.json({ message: "LC_Ai backend running ✅" });
 });
 
+// Add this *before* app.use("/api/chat", chatRoutes);
+app.use("/api/chat", express.json()); // ensure body parsed (if not already)
+app.use("/api/chat", (req, res, next) => {
+  console.log(
+    "➡️ [CHAT REQUEST]",
+    req.method,
+    req.originalUrl,
+    "body:",
+    JSON.stringify(req.body).slice(0, 2000)
+  );
+  next();
+});
+
 // API routes
 app.use("/api/auth", authRoutes);
 app.use("/api/rooms", roomRoutes);
 app.use("/api/chat", chatRoutes);
+app.use("/api/stream", streamRoutes);
+app.use("/api/upload", uploadRoutes);
 
 // ---------- Helpers ----------
 
@@ -370,7 +413,6 @@ io.on("connection", (socket) => {
   );
 
   // ------- GUEST JOIN -------
-
   socket.on("join_room_guest", async ({ code, name, guestId }) => {
     try {
       if (!code || !name) {
@@ -422,7 +464,6 @@ io.on("connection", (socket) => {
   });
 
   // ------- CHAT JOIN / LEAVE -------
-
   socket.on("join_room", async ({ roomId, displayName }) => {
     if (!roomId) return;
     const roomKey = String(roomId);
@@ -470,7 +511,6 @@ io.on("connection", (socket) => {
   });
 
   // ------- SEND MESSAGE -------
-
   socket.on("send_message", async (data) => {
     try {
       const roomKey = String(data.roomId);
@@ -643,7 +683,6 @@ io.on("connection", (socket) => {
   );
 
   // ------- VOICE / VIDEO CALL -------
-
   socket.on("join_call", ({ roomId, isOwner, displayName }) => {
     if (!roomId) return;
     const roomKey = String(roomId);
@@ -710,7 +749,6 @@ io.on("connection", (socket) => {
 });
 
 // ---------- START SERVER ----------
-
 async function start() {
   try {
     await mongoose.connect(process.env.MONGO_URI, { dbName: "lc_ai" });
@@ -722,5 +760,18 @@ async function start() {
     console.error("❌ Error starting server:", err.message);
   }
 }
+
+// Place this near the bottom of server.js (before start())
+app.use((err, req, res, next) => {
+  // show full stack in server console
+  console.error("‼️ Unhandled error:", err && err.stack ? err.stack : err);
+  // return a safe error shape to client
+  res.status(err?.status || 500).json({
+    ok: false,
+    message: err?.message || "Internal Server Error",
+    // DO NOT send stack to browser in production; for debugging only:
+    ...(process.env.NODE_ENV !== "production" ? { stack: err?.stack } : {}),
+  });
+});
 
 start();

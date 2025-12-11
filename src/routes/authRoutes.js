@@ -1,4 +1,4 @@
-// routes/authRoutes.js
+// src/routes/authRoutes.js
 import express from "express";
 import jwt from "jsonwebtoken";
 import bcrypt from "bcryptjs";
@@ -61,7 +61,8 @@ router.post("/signup/request-otp", async (req, res) => {
     try {
       await sendOtpEmail(email, otpCode);
     } catch (mailErr) {
-      console.error("Failed to send OTP email:", mailErr.message);
+      console.error("Failed to send OTP email:", mailErr?.message || mailErr);
+      // return dev OTP so signup flow can be tested locally
       return res.json({
         message: "OTP generated (email failed). Using dev mode.",
         devOtp: otpCode,
@@ -217,60 +218,90 @@ router.post("/google", async (req, res) => {
 });
 
 // --------------- PASSWORD RESET (request + confirm) ---------------
-// Request reset: generate token, save on user (with expiry), send email or return dev token
+
+/**
+ * POST /api/auth/password-reset/request
+ * - Accepts { email }
+ * - Generates a short numeric OTP (6 digits), stores a SHA256 hash in DB and an expiry (10 minutes)
+ * - Sends raw OTP to user's email via sendOtpEmail
+ * - For dev (mail not delivered) returns devResetToken so you can test
+ */
 router.post("/password-reset/request", async (req, res) => {
   try {
     const { email } = req.body || {};
-    if (!email) return res.status(400).json({ error: "Email is required" });
+    console.log(
+      "➡️ [PASSWORD RESET REQUEST] body:",
+      JSON.stringify(req.body).slice(0, 1000)
+    );
+
+    if (!email) {
+      console.log("↩️ [PASSWORD RESET] missing email");
+      return res.status(400).json({ ok: false, error: "Email is required" });
+    }
 
     const user = await User.findOne({ email });
     if (!user) {
-      // Do not reveal whether user exists — return neutral success message
+      // Do not reveal existence — still return OK
+      console.log("↩️ [PASSWORD RESET] user not found for:", email);
       return res.json({
-        message:
-          "If an account exists, password reset instructions have been sent.",
+        ok: true,
+        message: "If an account exists, password reset instructions were sent.",
       });
     }
 
-    const token = crypto.randomBytes(20).toString("hex");
-    const expiresAt = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
+    // generate a user-friendly 6-digit OTP
+    const rawToken = generateOtpCode(); // expects your util returns 6-digit string
+    const hashedToken = crypto
+      .createHash("sha256")
+      .update(rawToken)
+      .digest("hex");
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
 
-    user.resetToken = token;
-    user.resetTokenExpiresAt = expiresAt;
+    // store hashed token, expiry and reset attempt metadata
+    user.resetPasswordToken = hashedToken;
+    user.resetPasswordExpiresAt = expiresAt;
+    user.resetAttempts = 0;
+    user.resetLockedUntil = undefined;
     await user.save();
 
     try {
-      // If you have a dedicated reset mailer function, use it. Otherwise fallback to OTP mailer.
-      if (typeof sendOtpEmail === "function") {
-        // sendOtpEmail(email, token) is used as fallback if no dedicated sendResetEmail exists
-        await sendOtpEmail(email, token);
-        return res.json({ message: "Password reset token sent to email." });
-      } else {
-        // No mailer available - return dev token for local testing
-        console.warn("No mailer configured for password reset. Token:", token);
-        return res.json({
-          message:
-            "Reset token generated (email not configured). Use dev token.",
-          devResetToken: token,
-        });
-      }
+      await sendOtpEmail(email, rawToken);
+      console.log("✅ [PASSWORD RESET] email (OTP) sent to:", email);
+      return res.json({
+        ok: true,
+        message: "Password reset token sent to email.",
+      });
     } catch (mailErr) {
+      // Mail failed — log and return dev token so frontend can continue testing
       console.error(
-        "Password reset email failed:",
-        mailErr?.message || mailErr
+        "❌ [PASSWORD RESET] sendOtpEmail failed:",
+        mailErr && mailErr.message ? mailErr.message : mailErr
       );
       return res.json({
+        ok: true,
         message: "Reset token generated (email failed). Use dev token.",
-        devResetToken: token,
+        devResetToken: rawToken,
       });
     }
   } catch (err) {
-    console.error("password-reset/request error:", err);
-    return res.status(500).json({ error: "Server error" });
+    console.error(
+      "❌ [PASSWORD RESET] error:",
+      err && err.stack ? err.stack : err
+    );
+    return res.status(500).json({ ok: false, error: "Server error" });
   }
 });
 
-// Confirm reset: accept email, token, newPassword — verify token & expiry, update password
+/**
+ * POST /api/auth/password-reset/confirm
+ * - Accepts { email, token, newPassword }
+ * - Validates attempts/lockouts, hashes token and finds user by hashed token + expiry
+ * - Replaces passwordHash and clears reset fields
+ * - Returns a new JWT + user object (auto-login)
+ *
+ * Attempt-limiting:
+ * - up to 5 failed attempts, then lock for 15 minutes.
+ */
 router.post("/password-reset/confirm", async (req, res) => {
   try {
     const { email, token, newPassword } = req.body || {};
@@ -281,27 +312,58 @@ router.post("/password-reset/confirm", async (req, res) => {
     }
 
     const user = await User.findOne({ email });
-    if (!user) return res.status(400).json({ error: "Invalid token or email" });
+    if (!user) {
+      // avoid revealing existence
+      return res.status(400).json({ error: "Invalid or expired token" });
+    }
 
-    if (!user.resetToken || !user.resetTokenExpiresAt) {
+    // Check lockout
+    if (user.resetLockedUntil && user.resetLockedUntil > new Date()) {
+      const mins = Math.ceil((user.resetLockedUntil - new Date()) / 60000);
       return res
-        .status(400)
-        .json({ error: "No reset requested for this account" });
+        .status(429)
+        .json({ error: `Too many attempts. Try again in ${mins} minute(s).` });
     }
 
-    if (String(user.resetToken) !== String(token)) {
-      return res.status(400).json({ error: "Invalid reset token" });
+    // hash provided token and lookup
+    const hashedProvided = crypto
+      .createHash("sha256")
+      .update(String(token))
+      .digest("hex");
+
+    // ensure token and expiry match
+    const tokenMatches =
+      user.resetPasswordToken && user.resetPasswordToken === hashedProvided;
+    const notExpired =
+      user.resetPasswordExpiresAt && user.resetPasswordExpiresAt > new Date();
+
+    if (!tokenMatches || !notExpired) {
+      // increment attempts and possibly lock
+      user.resetAttempts = (user.resetAttempts || 0) + 1;
+
+      // If attempts exceed limit, lock for 15 minutes
+      const MAX_ATTEMPTS = 5;
+      if (user.resetAttempts >= MAX_ATTEMPTS) {
+        user.resetLockedUntil = new Date(Date.now() + 15 * 60 * 1000); // 15 minutes lock
+        user.resetAttempts = 0; // reset attempts counter after locking
+        await user.save();
+        return res
+          .status(429)
+          .json({ error: "Too many invalid attempts. Try again later." });
+      }
+
+      await user.save();
+      return res.status(400).json({ error: "Invalid or expired token" });
     }
 
-    if (new Date(user.resetTokenExpiresAt) < new Date()) {
-      return res.status(400).json({ error: "Reset token expired" });
-    }
-
+    // Valid token: update password and clear reset fields
     const passwordHash = await bcrypt.hash(newPassword, 10);
     user.passwordHash = passwordHash;
 
-    user.resetToken = undefined;
-    user.resetTokenExpiresAt = undefined;
+    user.resetPasswordToken = undefined;
+    user.resetPasswordExpiresAt = undefined;
+    user.resetAttempts = 0;
+    user.resetLockedUntil = undefined;
 
     if (!user.isVerified) user.isVerified = true;
 
