@@ -12,6 +12,10 @@ const userSchema = new mongoose.Schema(
     isVerified: { type: Boolean, default: false },
     otpCode: { type: String }, // 6-digit code
     otpExpiresAt: { type: Date }, // expiry timestamp
+
+    // ✅ Password reset fields (used by /password-reset endpoints)
+    resetToken: { type: String, default: undefined },
+    resetTokenExpiresAt: { type: Date, default: undefined },
   },
   { timestamps: true }
 );

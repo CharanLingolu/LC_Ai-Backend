@@ -2,6 +2,7 @@
 import express from "express";
 import jwt from "jsonwebtoken";
 import bcrypt from "bcryptjs";
+import crypto from "crypto";
 import User from "../models/User.js";
 import { generateOtpCode } from "../utils/otp.js";
 import { sendOtpEmail } from "../utils/mailer.js";
@@ -212,6 +213,116 @@ router.post("/google", async (req, res) => {
   } catch (err) {
     console.error("Google auth error:", err);
     res.status(500).json({ error: "Server error" });
+  }
+});
+
+// --------------- PASSWORD RESET (request + confirm) ---------------
+// Request reset: generate token, save on user (with expiry), send email or return dev token
+router.post("/password-reset/request", async (req, res) => {
+  try {
+    const { email } = req.body || {};
+    if (!email) return res.status(400).json({ error: "Email is required" });
+
+    const user = await User.findOne({ email });
+    if (!user) {
+      // Do not reveal whether user exists — return neutral success message
+      return res.json({
+        message:
+          "If an account exists, password reset instructions have been sent.",
+      });
+    }
+
+    const token = crypto.randomBytes(20).toString("hex");
+    const expiresAt = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
+
+    user.resetToken = token;
+    user.resetTokenExpiresAt = expiresAt;
+    await user.save();
+
+    try {
+      // If you have a dedicated reset mailer function, use it. Otherwise fallback to OTP mailer.
+      if (typeof sendOtpEmail === "function") {
+        // sendOtpEmail(email, token) is used as fallback if no dedicated sendResetEmail exists
+        await sendOtpEmail(email, token);
+        return res.json({ message: "Password reset token sent to email." });
+      } else {
+        // No mailer available - return dev token for local testing
+        console.warn("No mailer configured for password reset. Token:", token);
+        return res.json({
+          message:
+            "Reset token generated (email not configured). Use dev token.",
+          devResetToken: token,
+        });
+      }
+    } catch (mailErr) {
+      console.error(
+        "Password reset email failed:",
+        mailErr?.message || mailErr
+      );
+      return res.json({
+        message: "Reset token generated (email failed). Use dev token.",
+        devResetToken: token,
+      });
+    }
+  } catch (err) {
+    console.error("password-reset/request error:", err);
+    return res.status(500).json({ error: "Server error" });
+  }
+});
+
+// Confirm reset: accept email, token, newPassword — verify token & expiry, update password
+router.post("/password-reset/confirm", async (req, res) => {
+  try {
+    const { email, token, newPassword } = req.body || {};
+    if (!email || !token || !newPassword) {
+      return res
+        .status(400)
+        .json({ error: "Email, token and new password are required" });
+    }
+
+    const user = await User.findOne({ email });
+    if (!user) return res.status(400).json({ error: "Invalid token or email" });
+
+    if (!user.resetToken || !user.resetTokenExpiresAt) {
+      return res
+        .status(400)
+        .json({ error: "No reset requested for this account" });
+    }
+
+    if (String(user.resetToken) !== String(token)) {
+      return res.status(400).json({ error: "Invalid reset token" });
+    }
+
+    if (new Date(user.resetTokenExpiresAt) < new Date()) {
+      return res.status(400).json({ error: "Reset token expired" });
+    }
+
+    const passwordHash = await bcrypt.hash(newPassword, 10);
+    user.passwordHash = passwordHash;
+
+    user.resetToken = undefined;
+    user.resetTokenExpiresAt = undefined;
+
+    if (!user.isVerified) user.isVerified = true;
+
+    await user.save();
+
+    const tokenJwt = signToken(user);
+
+    return res.json({
+      message: "Password updated successfully",
+      token: tokenJwt,
+      user: {
+        id: user._id.toString(),
+        name: user.name,
+        email: user.email,
+        avatar: user.avatar,
+        provider: user.provider,
+      },
+    });
+  } catch (err) {
+    console.error("password-reset/confirm error:", err);
+    return res.status(500).json({ error: "Server error" });
   }
 });
 
