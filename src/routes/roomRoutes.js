@@ -13,91 +13,67 @@ function generateInviteLinkId() {
   return Math.random().toString(36).substring(2, 10);
 }
 
-/**
- * POST /api/rooms/join
- * body: { code, userId, userName }
- *
- * Finds room by code, adds user as member if not present, saves and returns updated room.
- */
 router.post("/join", async (req, res) => {
   try {
     const { code, userId, userName } = req.body;
+    if (!code) return res.status(400).json({ error: "Missing room code" });
 
-    if (!code) {
-      return res.status(400).json({ error: "Missing room code" });
-    }
+    const trimmedCode = String(code).trim();
+    const trimmedName = userName
+      ? String(userName).trim().slice(0, 64)
+      : "Guest";
 
-    // Find room by code (code may be number or string in DB)
-    const room = await Room.findOne({ code: String(code) }).exec();
-    if (!room) {
+    // Pick canonical member id: prefer explicit userId, otherwise use name-based guest id
+    const memberId = userId ? String(userId) : `guest_${Date.now()}`;
+
+    // Atomic update: add member only if not already present using $addToSet.
+    // We store minimal member structure and return the updated document.
+    const update = {
+      $setOnInsert: { code: trimmedCode }, // in case of odd inserts (defensive)
+      $addToSet: {
+        members: { id: memberId, name: trimmedName, role: "member" },
+      },
+    };
+
+    // Use findOneAndUpdate atomically and return the new doc
+    const updated = await Room.findOneAndUpdate({ code: trimmedCode }, update, {
+      new: true,
+      runValidators: true,
+    }).lean();
+
+    if (!updated) {
       return res.status(404).json({ error: "Room not found" });
     }
 
-    // Ensure members array exists
-    room.members = Array.isArray(room.members) ? room.members : [];
-
-    // Determine unique identifier for member: prefer userId, then email in userId, else generated
-    const memberId =
-      userId || (userName ? `${userName}` : `guest_${Date.now()}`);
-
-    // Avoid duplicates: match by id or email-like id
-    const alreadyMember = room.members.some((m) => {
-      try {
-        return String(m.id) === String(memberId);
-      } catch {
-        return false;
-      }
-    });
-
-    if (!alreadyMember) {
-      room.members.push({
-        id: memberId,
-        name: userName || "Guest",
-        role: "member",
-      });
-    }
-
-    // Optionally update lastActive / online counters if you track those
-    // room.lastActive = new Date();
-
-    // Save and return updated room
-    await room.save();
-
-    // Prepare output similar to frontend normalizeRoom
-    const out = {
-      ...room.toObject(),
-      id: room.id || room._id?.toString() || String(room.code),
+    // Normalize id
+    const outRoom = {
+      id: updated.id || updated._id?.toString() || String(updated.code),
+      name: updated.name,
+      code: updated.code,
+      ownerId: updated.ownerId,
+      allowAI: !!updated.allowAI,
+      members: Array.isArray(updated.members) ? updated.members : [],
+      onlineCount: updated.onlineCount || 0,
+      // include other safe fields you want clients to see
     };
 
-    // Broadcast room_list_update or specific events if your server uses socket.io
+    // Broadcast only the updated room (sanitized) to reduce bandwidth/leak
     try {
-      // If you attach io on the app like: app.set('io', io) in server.js
       const io = req.app?.get?.("io");
       if (io) {
-        // emit a generic room_list_update (frontend already listens for this)
-        const rooms = await Room.find({}).lean().exec();
-        // normalize rooms slightly
-        const normalized = rooms.map((r) => ({
-          ...r,
-          id: r.id || r._id?.toString() || String(r.code),
-        }));
-        io.emit("room_list_update", normalized);
-        // also emit an event for joined user presence if you want
-        io.emit("user_joined_room", {
-          roomId: out.id,
-          userId: memberId,
-          userName,
+        io.emit("room_joined", {
+          room: outRoom,
+          joinedUser: { id: memberId, name: trimmedName },
         });
+
+        // optionally: emit room_list_update for this single room
+        io.emit("room_list_update", [outRoom]);
       }
     } catch (e) {
-      // ignore if io is not present
-      console.warn(
-        "room join: io emit failed or not present:",
-        e?.message || e
-      );
+      console.warn("Emit failed:", e?.message || e);
     }
 
-    return res.json(out);
+    return res.json(outRoom);
   } catch (err) {
     console.error("POST /api/rooms/join error:", err);
     return res.status(500).json({ error: "Server error" });
