@@ -40,15 +40,8 @@ console.log(
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-// server.js (add)
-console.log("🔍 FRONTEND_URL:", process.env.FRONTEND_URL);
-console.log(
-  "🔍 VITE_SOCKET_URL (client-side should match):",
-  process.env.VITE_SOCKET_URL
-);
-
 // --- CORS CONFIG (replace current cors setup with this) ---
-const frontendLocal = "http://localhost:5173"; // or 3000, 3001 — whatever your dev server uses
+const frontendLocal = "http://localhost:5173";
 const extraLocalHosts = [
   "http://localhost:3000",
   "http://127.0.0.1:5173",
@@ -58,7 +51,7 @@ const extraLocalHosts = [
 const allowedOrigins = new Set(
   [
     frontendLocal,
-    process.env.FRONTEND_URL, // e.g. https://lc-ai-frontend.vercel.app
+    process.env.FRONTEND_URL,
     process.env.VITE_SOCKET_URL &&
       process.env.VITE_SOCKET_URL.replace(/^https?:\/\//, (m) => m), // not required but kept
     ...extraLocalHosts,
