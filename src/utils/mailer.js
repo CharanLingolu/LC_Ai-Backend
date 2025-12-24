@@ -7,13 +7,13 @@ function getTransporter() {
   if (transporter) return transporter;
 
   transporter = nodemailer.createTransport({
-    host: process.env.SMTP_HOST, // smtp-relay.brevo.com
+    host: process.env.SMTP_HOST,
     port: 587,
     secure: false,
     requireTLS: true,
     auth: {
-      user: process.env.SMTP_USER, // apikey
-      pass: process.env.SMTP_PASS, // Brevo SMTP key
+      user: process.env.SMTP_USER, // MUST be "apikey"
+      pass: process.env.SMTP_PASS,
     },
     connectionTimeout: 8000,
     greetingTimeout: 8000,
@@ -33,11 +33,9 @@ export async function sendOtpEmail(toEmail, otpCode) {
       subject: "Your LC_Ai OTP Code",
       text: `Your OTP is ${otpCode}. It expires in 10 minutes.`,
       html: `
-        <div style="font-family:Arial,sans-serif">
-          <h2>LC_Ai Verification Code</h2>
-          <h1 style="letter-spacing:4px">${otpCode}</h1>
-          <p>This code expires in <b>10 minutes</b>.</p>
-        </div>
+        <h2>LC_Ai Verification Code</h2>
+        <h1>${otpCode}</h1>
+        <p>Expires in 10 minutes.</p>
       `,
     });
 
@@ -45,6 +43,6 @@ export async function sendOtpEmail(toEmail, otpCode) {
     return info;
   } catch (err) {
     console.error("❌ OTP email failed:", err.message);
-    return null; // never crash API
+    return null;
   }
 }
