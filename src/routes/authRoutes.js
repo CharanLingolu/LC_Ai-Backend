@@ -219,21 +219,15 @@ router.post("/google", async (req, res) => {
 router.post("/password-reset/request", async (req, res) => {
   try {
     const { email } = req.body || {};
-    console.log(
-      "➡️ [PASSWORD RESET REQUEST] body:",
-      JSON.stringify(req.body).slice(0, 1000)
-    );
-
     if (!email) {
       return res.status(400).json({ ok: false, error: "Email is required" });
     }
 
     const user = await User.findOne({ email });
     if (!user) {
-      // Do not reveal existence
       return res.json({
         ok: true,
-        message: "If an account exists, password reset instructions were sent.",
+        message: "If an account exists, reset instructions were sent.",
       });
     }
 
@@ -252,22 +246,80 @@ router.post("/password-reset/request", async (req, res) => {
     const sent = await sendOtpEmail(email, rawToken);
 
     if (!sent) {
-      console.error("❌ [PASSWORD RESET] sendOtpEmail failed for:", email);
       return res.json({
         ok: true,
-        message: "Reset token generated (email failed). Use dev token.",
+        message: "Reset token generated (email failed).",
         devResetToken: rawToken,
       });
     }
 
-    console.log("✅ [PASSWORD RESET] email (OTP) sent to:", email);
     return res.json({
       ok: true,
       message: "Password reset token sent to email.",
     });
   } catch (err) {
-    console.error("❌ [PASSWORD RESET] error:", err);
+    console.error("❌ password-reset/request error:", err);
     return res.status(500).json({ ok: false, error: "Server error" });
+  }
+});
+
+// --------------- PASSWORD RESET (confirm) ---------------
+router.post("/password-reset/confirm", async (req, res) => {
+  try {
+    const { email, token, newPassword } = req.body || {};
+
+    if (!email || !token || !newPassword) {
+      return res
+        .status(400)
+        .json({ error: "Email, token and new password are required" });
+    }
+
+    const user = await User.findOne({ email });
+    if (!user) {
+      return res.status(400).json({ error: "Invalid or expired token" });
+    }
+
+    if (
+      user.resetPasswordExpiresAt &&
+      user.resetPasswordExpiresAt < new Date()
+    ) {
+      return res.status(400).json({ error: "Token expired" });
+    }
+
+    const hashedProvided = crypto
+      .createHash("sha256")
+      .update(String(token))
+      .digest("hex");
+
+    if (hashedProvided !== user.resetPasswordToken) {
+      return res.status(400).json({ error: "Invalid token" });
+    }
+
+    user.passwordHash = await bcrypt.hash(newPassword, 10);
+    user.resetPasswordToken = undefined;
+    user.resetPasswordExpiresAt = undefined;
+    user.resetAttempts = 0;
+    user.resetLockedUntil = undefined;
+    user.isVerified = true;
+
+    await user.save();
+
+    const jwtToken = signToken(user);
+
+    return res.json({
+      message: "Password updated successfully",
+      token: jwtToken,
+      user: {
+        id: user._id.toString(),
+        name: user.name,
+        email: user.email,
+        avatar: user.avatar,
+        provider: user.provider,
+      },
+    });
+  } catch (err) {
+    console.error("❌ password-reset/confirm error:", err);
+    return res.status(500).json({ error: "Server error" });
   }
 });
 
