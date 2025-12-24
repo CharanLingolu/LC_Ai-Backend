@@ -1,37 +1,34 @@
 // src/utils/mailer.js
 import nodemailer from "nodemailer";
 
-let cachedTransporter = null;
+let transporter;
 
 function getTransporter() {
-  if (cachedTransporter) return cachedTransporter;
+  if (transporter) return transporter;
 
-  cachedTransporter = nodemailer.createTransport({
-    host: "smtp.gmail.com",
+  transporter = nodemailer.createTransport({
+    host: process.env.SMTP_HOST, // smtp-relay.brevo.com
     port: 587,
     secure: false,
     requireTLS: true,
     auth: {
-      user: process.env.SMTP_USER, // your gmail
-      pass: process.env.SMTP_PASS, // app password
+      user: process.env.SMTP_USER, // apikey
+      pass: process.env.SMTP_PASS, // Brevo SMTP key
     },
-    connectionTimeout: 7000,
-    greetingTimeout: 7000,
-    socketTimeout: 7000,
+    connectionTimeout: 8000,
+    greetingTimeout: 8000,
+    socketTimeout: 8000,
   });
 
-  return cachedTransporter;
+  return transporter;
 }
 
 export async function sendOtpEmail(toEmail, otpCode) {
   try {
-    const transporter = getTransporter();
-    await transporter.verify();
-    console.log("SMTP verified with Gmail");
+    const mailer = getTransporter();
 
-    const info = await transporter.sendMail({
-      // ⚠️ MUST be exactly your Gmail address
-      from: `"LC_Ai" <${process.env.SMTP_USER}>`,
+    const info = await mailer.sendMail({
+      from: `"LC_Ai" <${process.env.SMTP_FROM}>`,
       to: toEmail,
       subject: "Your LC_Ai OTP Code",
       text: `Your OTP is ${otpCode}. It expires in 10 minutes.`,
@@ -48,6 +45,6 @@ export async function sendOtpEmail(toEmail, otpCode) {
     return info;
   } catch (err) {
     console.error("❌ OTP email failed:", err.message);
-    return null;
+    return null; // never crash API
   }
 }
