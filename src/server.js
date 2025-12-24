@@ -767,4 +767,10 @@ app.use((err, req, res, next) => {
   });
 });
 
+console.log("SMTP FINAL CHECK:", {
+  host: process.env.SMTP_HOST,
+  user: process.env.SMTP_USER,
+  from: process.env.SMTP_FROM,
+});
+
 start();
