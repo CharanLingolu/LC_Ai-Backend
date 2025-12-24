@@ -3,18 +3,16 @@ import nodemailer from "nodemailer";
 
 export function createTransporter() {
   return nodemailer.createTransport({
-    host: "smtp.gmail.com",
-    port: 465,
-    secure: true,
+    host: process.env.SMTP_HOST || "smtp.gmail.com",
+    port: Number(process.env.SMTP_PORT) || 587,
+    secure: false, // 🚨 MUST be false for 587
     auth: {
       user: process.env.SMTP_USER,
       pass: process.env.SMTP_PASS,
     },
-    tls: {
-      rejectUnauthorized: false,
-    },
-    connectionTimeout: 15000,
-    socketTimeout: 15000,
+    connectionTimeout: 20000,
+    greetingTimeout: 20000,
+    socketTimeout: 20000,
   });
 }
 
